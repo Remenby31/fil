@@ -1,3 +1,4 @@
+mod hub;
 mod pty;
 mod terminal;
 

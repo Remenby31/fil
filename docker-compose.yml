@@ -1,0 +1,18 @@
+services:
+  hub:
+    build: .
+    ports:
+      - "3100:3100"
+    volumes:
+      - fil-data:/data
+    environment:
+      - PORT=3100
+      - DATABASE_URL=sqlite:/data/fil-hub.db?mode=rwc
+      - JWT_SECRET=${JWT_SECRET:-change-me-in-production}
+      - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID:-}
+      - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET:-}
+      - PUBLIC_URL=${PUBLIC_URL:-http://localhost:3100}
+    restart: unless-stopped
+
+volumes:
+  fil-data:

@@ -24,4 +24,9 @@ libc = "0.2"
 signal-hook = "0.3"
 signal-hook-tokio = { version = "0.3", features = ["futures-v0_3"] }
 clap = { version = "4", features = ["derive"] }
+chrono = { workspace = true }
 dirs = "6"
+tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
+futures-util = "0.3"
+prost = { workspace = true }
+url = "2"

@@ -4,6 +4,7 @@ mod db;
 mod routes;
 mod sessions;
 mod state;
+mod ws;
 
 use axum::routing::{delete, get, post};
 use axum::Router;
@@ -41,6 +42,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/devices", get(routes::list_devices))
         .route("/devices/{device_id}", delete(routes::delete_device))
         .route("/sessions", get(routes::list_sessions))
+        // WebSocket for daemon connections
+        .route("/ws", get(ws::ws_handler))
         // Middleware
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive())
