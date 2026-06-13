@@ -1,0 +1,110 @@
+syntax = "proto3";
+
+package fil.protocol;
+
+// Device registration
+message DeviceRegister {
+    string device_id = 1;
+    string device_name = 2;
+    string user_token = 3;
+    string os = 4;
+    string hostname = 5;
+}
+
+message DeviceRegistered {
+    string device_id = 1;
+    string device_token = 2;
+}
+
+// Session lifecycle
+message SessionCreated {
+    string session_id = 1;
+    string device_id = 2;
+    string shell = 3;
+    string cwd = 4;
+    int64 created_at = 5;
+    uint32 cols = 6;
+    uint32 rows = 7;
+}
+
+message SessionDestroyed {
+    string session_id = 1;
+    string device_id = 2;
+    int32 exit_code = 3;
+    int64 destroyed_at = 4;
+}
+
+// Terminal data streaming
+message SessionData {
+    string session_id = 1;
+    bytes data = 2;
+}
+
+message SessionInput {
+    string session_id = 1;
+    bytes data = 2;
+}
+
+// Terminal resize
+message SessionResize {
+    string session_id = 1;
+    uint32 cols = 2;
+    uint32 rows = 3;
+}
+
+// Heartbeat & sync
+message SessionInfo {
+    string session_id = 1;
+    string shell = 2;
+    string cwd = 3;
+    int64 created_at = 4;
+    uint32 cols = 5;
+    uint32 rows = 6;
+}
+
+message Heartbeat {
+    string device_id = 1;
+    repeated SessionInfo sessions = 2;
+    int64 timestamp = 3;
+}
+
+message HeartbeatAck {
+    int64 timestamp = 1;
+}
+
+// Session state (hub → client)
+enum SessionStatus {
+    SESSION_STATUS_UNSPECIFIED = 0;
+    SESSION_STATUS_ONLINE = 1;
+    SESSION_STATUS_UNREACHABLE = 2;
+    SESSION_STATUS_OFFLINE = 3;
+}
+
+message SessionStateUpdate {
+    string session_id = 1;
+    string device_id = 2;
+    SessionStatus status = 3;
+    SessionInfo info = 4;
+}
+
+// Top-level message envelope
+message DaemonMessage {
+    oneof payload {
+        DeviceRegister device_register = 1;
+        SessionCreated session_created = 2;
+        SessionDestroyed session_destroyed = 3;
+        SessionData session_data = 4;
+        SessionResize session_resize = 5;
+        Heartbeat heartbeat = 6;
+    }
+}
+
+message HubMessage {
+    oneof payload {
+        DeviceRegistered device_registered = 1;
+        SessionStateUpdate session_state_update = 2;
+        SessionInput session_input = 3;
+        SessionData session_data = 4;
+        HeartbeatAck heartbeat_ack = 5;
+    }
+}

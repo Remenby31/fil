@@ -1,0 +1,16 @@
+[package]
+name = "fil-protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Protocol definitions for Fil — protobuf messages and shared types"
+
+[dependencies]
+prost = { workspace = true }
+prost-types = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+
+[build-dependencies]
+prost-build = "0.13"
