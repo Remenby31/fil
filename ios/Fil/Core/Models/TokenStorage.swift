@@ -23,7 +23,7 @@ enum TokenStorage {
     }
 
     static func loadHubUrl() -> String {
-        load(key: hubUrlKey) ?? "https://hub.fil.sh"
+        load(key: hubUrlKey) ?? "https://fil.remenby.fr"
     }
 
     // MARK: - Keychain Helpers

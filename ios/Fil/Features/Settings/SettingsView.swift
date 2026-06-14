@@ -67,7 +67,7 @@ struct SettingsView: View {
                         .font(.system(size: 14))
                         .foregroundStyle(FilTheme.cloud)
                     Spacer()
-                    TextField("https://hub.fil.sh", text: $hubUrl)
+                    TextField("https://fil.remenby.fr", text: $hubUrl)
                         .multilineTextAlignment(.trailing)
                         .foregroundStyle(FilTheme.filGreen)
                         .font(.system(size: 13, design: .monospaced))
