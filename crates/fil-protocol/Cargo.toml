@@ -11,6 +11,9 @@ prost-types = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 serde = { workspace = true }
+snow = "0.9"
+rand = "0.9"
+base64 = "0.22"
 
 [build-dependencies]
 prost-build = "0.13"
