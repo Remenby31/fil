@@ -1,7 +1,7 @@
 mod jwt;
 mod github;
 
-pub use jwt::{Claims, create_token, verify_token};
+pub use jwt::verify_token;
 pub use github::{github_auth_start, github_auth_callback};
 
 use axum::extract::FromRequestParts;

@@ -4,8 +4,7 @@ use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
 use prost::Message as ProstMessage;
 use serde::Deserialize;
-use tokio::sync::broadcast;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use crate::sessions::{SessionInfo, SessionStatus};
 use crate::state::AppState;
@@ -88,7 +87,7 @@ async fn handle_socket(socket: WebSocket, device_id: String, user_id: String, st
 async fn handle_daemon_message(
     msg: &proto::DaemonMessage,
     device_id: &str,
-    user_id: &str,
+    _user_id: &str,
     state: &AppState,
 ) {
     let Some(payload) = &msg.payload else {

@@ -1,7 +1,6 @@
 use crate::config::Config;
 use crate::db::Database;
 use crate::sessions::SessionRegistry;
-use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct AppState {

@@ -3,7 +3,7 @@ use futures_util::{SinkExt, StreamExt};
 use prost::Message as ProstMessage;
 use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-use tracing::{debug, error, info, warn};
+use tracing::{info, warn};
 use url::Url;
 
 use fil_protocol::proto;
