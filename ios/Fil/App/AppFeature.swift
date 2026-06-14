@@ -9,11 +9,15 @@ struct AppFeature {
         case main(MachinesFeature.State)
 
         init() {
+            #if DEBUG
+            self = .main(MachinesFeature.State())
+            #else
             if TokenStorage.loadToken() != nil {
                 self = .main(MachinesFeature.State())
             } else {
                 self = .auth(AuthFeature.State())
             }
+            #endif
         }
     }
 
