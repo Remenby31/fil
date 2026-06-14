@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 import UserNotifications
 
 enum FilNotificationType: String, Codable {
@@ -17,11 +18,22 @@ struct FilNotification: Codable {
 }
 
 enum NotificationManager {
-    static func requestPermission() async -> Bool {
-        do {
-            return try await UNUserNotificationCenter.current()
-                .requestAuthorization(options: [.alert, .sound, .badge])
-        } catch {
+    static func requestPermissionIfNeeded() async -> Bool {
+        let center = UNUserNotificationCenter.current()
+        let settings = await center.notificationSettings()
+
+        switch settings.authorizationStatus {
+        case .authorized, .provisional:
+            return true
+        case .notDetermined:
+            do {
+                let granted = try await center.requestAuthorization(options: [.alert, .sound, .badge])
+                if granted { registerCategories() }
+                return granted
+            } catch {
+                return false
+            }
+        default:
             return false
         }
     }
@@ -63,6 +75,16 @@ enum NotificationManager {
         UNUserNotificationCenter.current().add(request)
     }
 
+    static func updateBadge(count: Int) {
+        Task { @MainActor in
+            UNUserNotificationCenter.current().setBadgeCount(count)
+        }
+    }
+
+    static func clearBadge() {
+        updateBadge(count: 0)
+    }
+
     static func registerCategories() {
         let openAction = UNNotificationAction(
             identifier: "OPEN_SESSION",
@@ -77,5 +99,9 @@ enum NotificationManager {
         ]
 
         UNUserNotificationCenter.current().setNotificationCategories(Set(categories))
+    }
+
+    static func handleNotificationAction(sessionId: String) -> URL? {
+        URL(string: "fil://session/\(sessionId)")
     }
 }
