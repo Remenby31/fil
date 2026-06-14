@@ -30,3 +30,6 @@ tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
 futures-util = "0.3"
 prost = { workspace = true }
 url = "2"
+reqwest = { version = "0.12", features = ["json"] }
+open = "5"
+gethostname = "1"
