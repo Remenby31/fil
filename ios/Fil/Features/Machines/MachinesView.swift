@@ -6,55 +6,119 @@ struct MachinesView: View {
     @State private var showSettings = false
 
     var body: some View {
-        NavigationStack {
-            ZStack {
-                FilTheme.void_.ignoresSafeArea()
+        ZStack {
+            FilTheme.void_.ignoresSafeArea()
 
-                VStack(spacing: 0) {
-                    if !store.isConnected {
-                        connectionBanner
-                    }
-
-                    if store.machines.isEmpty && !store.isLoading {
-                        emptyState
-                    } else {
-                        machinesList
-                    }
+            VStack(spacing: 0) {
+                if !store.isConnected {
+                    connectionBanner
                 }
 
-                if store.isLoading && store.machines.isEmpty {
+                if store.machines.isEmpty && !store.isLoading {
+                    emptyState
+                } else if store.isLoading && store.machines.isEmpty {
                     loadingSkeleton
-                }
-            }
-            .navigationTitle("Machines")
-            .toolbarColorScheme(.dark, for: .navigationBar)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        showSettings = true
-                    } label: {
-                        Image(systemName: "gearshape")
-                            .foregroundStyle(FilTheme.cloud.opacity(0.6))
-                    }
-                }
-            }
-            .refreshable {
-                store.send(.refreshTapped)
-            }
-            .onAppear {
-                store.send(.onAppear)
-            }
-            .fullScreenCover(item: $store.scope(state: \.terminal, action: \.terminal)) { terminalStore in
-                TerminalSessionView(store: terminalStore)
-            }
-            .sheet(isPresented: $showSettings) {
-                SettingsView {
-                    showSettings = false
-                    store.send(.logoutTapped)
+                } else {
+                    mainContent
                 }
             }
         }
+        .onAppear { store.send(.onAppear) }
+        .fullScreenCover(item: $store.scope(state: \.terminal, action: \.terminal)) { terminalStore in
+            TerminalSessionView(store: terminalStore)
+        }
+        .sheet(isPresented: $showSettings) {
+            SettingsView {
+                showSettings = false
+                store.send(.logoutTapped)
+            }
+        }
         .preferredColorScheme(.dark)
+    }
+
+    // MARK: - Main Content
+
+    private var mainContent: some View {
+        VStack(spacing: 0) {
+            // Compact top bar
+            topBar
+
+            ScrollView {
+                VStack(spacing: 16) {
+                    // Status summary
+                    statusRow
+
+                    // Machine cards
+                    ForEach(store.machines) { machine in
+                        MachineCard(machine: machine) { session in
+                            store.send(.sessionTapped(session))
+                        }
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 4)
+                .padding(.bottom, 32)
+            }
+            .refreshable { store.send(.refreshTapped) }
+
+            if let error = store.errorMessage {
+                errorBanner(error)
+            }
+        }
+    }
+
+    // MARK: - Top Bar
+
+    private var topBar: some View {
+        HStack(alignment: .center) {
+            Text("fil")
+                .font(.system(size: 22, weight: .light))
+                .foregroundStyle(FilTheme.cloud)
+            + Text(".sh")
+                .font(.system(size: 22, weight: .light))
+                .foregroundStyle(FilTheme.filGreen)
+
+            Spacer()
+
+            Button {
+                showSettings = true
+            } label: {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 16))
+                    .foregroundStyle(FilTheme.cloud.opacity(0.4))
+                    .frame(width: 36, height: 36)
+                    .background(FilTheme.surface)
+                    .clipShape(Circle())
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+        .padding(.bottom, 12)
+    }
+
+    // MARK: - Status Row
+
+    private var statusRow: some View {
+        let onlineCount = store.machines.filter { $0.status == .online }.count
+        let sessionCount = store.machines.flatMap { $0.sessions }.count
+
+        return HStack(spacing: 16) {
+            StatusPill(
+                icon: "desktopcomputer",
+                value: "\(onlineCount)",
+                label: onlineCount == 1 ? "machine" : "machines",
+                color: onlineCount > 0 ? FilTheme.filGreen : FilTheme.offline
+            )
+
+            StatusPill(
+                icon: "terminal",
+                value: "\(sessionCount)",
+                label: sessionCount == 1 ? "session" : "sessions",
+                color: sessionCount > 0 ? FilTheme.filGreen : FilTheme.offline
+            )
+
+            Spacer()
+        }
     }
 
     // MARK: - Connection Banner
@@ -78,92 +142,74 @@ struct MachinesView: View {
         .background(FilTheme.warning.opacity(0.1))
     }
 
-    // MARK: - Machines List
-
-    private var machinesList: some View {
-        ScrollView {
-            LazyVStack(spacing: 12) {
-                ForEach(store.machines) { machine in
-                    MachineCard(machine: machine) { session in
-                        store.send(.sessionTapped(session))
-                    }
-                    .transition(.asymmetric(
-                        insertion: .move(edge: .top).combined(with: .opacity),
-                        removal: .opacity
-                    ))
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 8)
-            .padding(.bottom, 20)
-            .animation(.easeInOut(duration: 0.3), value: store.machines)
-
-            if let error = store.errorMessage {
-                errorBanner(error)
-                    .padding(.horizontal, 16)
-            }
-        }
-    }
-
     // MARK: - Loading Skeleton
 
     private var loadingSkeleton: some View {
-        VStack(spacing: 12) {
-            ForEach(0..<3, id: \.self) { _ in
-                RoundedRectangle(cornerRadius: 14)
-                    .fill(FilTheme.surface)
-                    .frame(height: 120)
-                    .shimmer()
+        VStack(spacing: 0) {
+            topBar
+            VStack(spacing: 12) {
+                ForEach(0..<3, id: \.self) { _ in
+                    RoundedRectangle(cornerRadius: 16)
+                        .fill(FilTheme.surface)
+                        .frame(height: 110)
+                        .shimmer()
+                }
             }
+            .padding(.horizontal, 16)
+            .padding(.top, 20)
+            Spacer()
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 80)
     }
 
     // MARK: - Empty State
 
     private var emptyState: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: 0) {
+            topBar
             Spacer()
 
-            ZStack {
-                Circle()
-                    .fill(FilTheme.surface)
-                    .frame(width: 80, height: 80)
+            VStack(spacing: 24) {
+                ZStack {
+                    Circle()
+                        .fill(FilTheme.filGreen.opacity(0.08))
+                        .frame(width: 96, height: 96)
 
-                Image(systemName: "desktopcomputer")
-                    .font(.system(size: 32))
-                    .foregroundStyle(FilTheme.cloud.opacity(0.3))
+                    Image(systemName: "desktopcomputer")
+                        .font(.system(size: 36))
+                        .foregroundStyle(FilTheme.filGreen.opacity(0.5))
+                }
+
+                VStack(spacing: 8) {
+                    Text("No machines yet")
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundStyle(FilTheme.cloud)
+
+                    Text("Install fil on your Mac to see\nyour sessions here.")
+                        .font(.system(size: 15))
+                        .foregroundStyle(FilTheme.cloud.opacity(0.4))
+                        .multilineTextAlignment(.center)
+                }
+
+                VStack(alignment: .leading, spacing: 10) {
+                    setupStep("1", "brew install fil")
+                    setupStep("2", "fil setup")
+                    setupStep("3", "Restart your terminal")
+                }
+                .padding(20)
+                .background(FilTheme.depth)
+                .clipShape(RoundedRectangle(cornerRadius: 14))
             }
-
-            VStack(spacing: 8) {
-                Text("No machines connected")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(FilTheme.cloud)
-
-                Text("Install fil on your Mac to get started")
-                    .font(.system(size: 15))
-                    .foregroundStyle(FilTheme.cloud.opacity(0.4))
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                codeStep("1", "brew install fil")
-                codeStep("2", "fil setup")
-                codeStep("3", "Restart your terminal")
-            }
-            .padding(20)
-            .background(FilTheme.depth)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
             .padding(.horizontal, 40)
 
+            Spacer()
             Spacer()
         }
     }
 
-    private func codeStep(_ num: String, _ code: String) -> some View {
+    private func setupStep(_ num: String, _ code: String) -> some View {
         HStack(spacing: 12) {
             Text(num)
-                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                .font(.system(size: 11, weight: .bold, design: .monospaced))
                 .foregroundStyle(FilTheme.void_)
                 .frame(width: 22, height: 22)
                 .background(FilTheme.filGreen)
@@ -179,23 +225,53 @@ struct MachinesView: View {
         HStack(spacing: 8) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(FilTheme.error)
-                .font(.system(size: 13))
+                .font(.system(size: 12))
 
             Text(message)
                 .font(.system(size: 13))
                 .foregroundStyle(FilTheme.error.opacity(0.8))
+                .lineLimit(1)
 
             Spacer()
 
             Button { store.send(.dismissError) } label: {
                 Image(systemName: "xmark")
-                    .font(.system(size: 11))
+                    .font(.system(size: 10))
                     .foregroundStyle(FilTheme.cloud.opacity(0.3))
             }
         }
-        .padding(12)
-        .background(FilTheme.error.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(FilTheme.error.opacity(0.06))
+    }
+}
+
+// MARK: - Status Pill
+
+struct StatusPill: View {
+    let icon: String
+    let value: String
+    let label: String
+    let color: Color
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(.system(size: 12))
+                .foregroundStyle(color)
+
+            Text(value)
+                .font(.system(size: 15, weight: .semibold, design: .monospaced))
+                .foregroundStyle(FilTheme.cloud)
+
+            Text(label)
+                .font(.system(size: 13))
+                .foregroundStyle(FilTheme.cloud.opacity(0.35))
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(FilTheme.surface)
+        .clipShape(Capsule())
     }
 }
 
@@ -206,51 +282,54 @@ struct MachineCard: View {
     let onSessionTap: (Session) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                PulsingDot(color: statusColor)
+        VStack(alignment: .leading, spacing: 14) {
+            // Machine header
+            HStack(spacing: 10) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(statusColor.opacity(0.1))
+                        .frame(width: 34, height: 34)
 
-                Text(machine.name)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(FilTheme.cloud)
+                    Image(systemName: machine.status == .offline ? "desktopcomputer" : "desktopcomputer")
+                        .font(.system(size: 15))
+                        .foregroundStyle(statusColor)
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(machine.name)
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(FilTheme.cloud)
+
+                        PulsingDot(color: statusColor)
+                    }
+
+                    Text(machine.status == .offline ? "Offline" : "\(machine.sessions.count) active")
+                        .font(.system(size: 12))
+                        .foregroundStyle(FilTheme.cloud.opacity(0.35))
+                }
 
                 Spacer()
-
-                if machine.status == .offline {
-                    Text("offline")
-                        .font(.system(size: 12))
-                        .foregroundStyle(FilTheme.cloud.opacity(0.3))
-                } else if !machine.sessions.isEmpty {
-                    Text("\(machine.sessions.count)")
-                        .font(.system(size: 12, weight: .medium, design: .monospaced))
-                        .foregroundStyle(FilTheme.filGreen)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(FilTheme.filGreen.opacity(0.1))
-                        .clipShape(Capsule())
-                }
             }
 
-            if machine.sessions.isEmpty && machine.status != .offline {
-                Text("No active sessions")
-                    .font(.system(size: 13))
-                    .foregroundStyle(FilTheme.cloud.opacity(0.3))
-                    .padding(.vertical, 4)
-            } else {
-                ForEach(machine.sessions) { session in
-                    Button { onSessionTap(session) } label: {
-                        SessionRow(session: session)
+            // Sessions
+            if !machine.sessions.isEmpty {
+                VStack(spacing: 6) {
+                    ForEach(machine.sessions) { session in
+                        Button { onSessionTap(session) } label: {
+                            SessionRow(session: session)
+                        }
+                        .buttonStyle(SessionButtonStyle())
                     }
-                    .buttonStyle(.plain)
                 }
             }
         }
         .padding(16)
-        .background(FilTheme.surface)
-        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .background(FilTheme.surface.opacity(0.6))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
         .overlay(
-            RoundedRectangle(cornerRadius: 14)
-                .stroke(Color.white.opacity(0.04), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(statusColor.opacity(machine.status == .online ? 0.08 : 0.03), lineWidth: 1)
         )
     }
 
@@ -269,31 +348,47 @@ struct SessionRow: View {
     let session: Session
 
     var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 3) {
+        HStack(spacing: 10) {
+            RoundedRectangle(cornerRadius: 3)
+                .fill(FilTheme.filGreen.opacity(0.4))
+                .frame(width: 3, height: 28)
+
+            VStack(alignment: .leading, spacing: 2) {
                 Text(session.shell)
                     .font(.system(size: 14, weight: .medium, design: .monospaced))
                     .foregroundStyle(FilTheme.cloud)
 
                 Text(session.cwd)
                     .font(.system(size: 12))
-                    .foregroundStyle(FilTheme.cloud.opacity(0.4))
+                    .foregroundStyle(FilTheme.cloud.opacity(0.3))
                     .lineLimit(1)
             }
 
             Spacer()
 
             Text(session.duration)
-                .font(.system(size: 12, design: .monospaced))
-                .foregroundStyle(FilTheme.cloud.opacity(0.3))
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(FilTheme.cloud.opacity(0.25))
 
             Image(systemName: "chevron.right")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(FilTheme.cloud.opacity(0.15))
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(FilTheme.filGreen.opacity(0.3))
         }
-        .padding(10)
-        .background(FilTheme.elevated)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(FilTheme.elevated.opacity(0.5))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+}
+
+// MARK: - Session Button Style
+
+struct SessionButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.97 : 1.0)
+            .opacity(configuration.isPressed ? 0.8 : 1.0)
+            .animation(.easeInOut(duration: 0.15), value: configuration.isPressed)
     }
 }
 
@@ -305,19 +400,21 @@ struct PulsingDot: View {
 
     var body: some View {
         ZStack {
-            Circle()
-                .fill(color.opacity(0.3))
-                .frame(width: 14, height: 14)
-                .scaleEffect(isPulsing ? 1.3 : 1.0)
-                .opacity(isPulsing ? 0 : 0.5)
+            if color == FilTheme.online {
+                Circle()
+                    .fill(color.opacity(0.3))
+                    .frame(width: 12, height: 12)
+                    .scaleEffect(isPulsing ? 1.5 : 1.0)
+                    .opacity(isPulsing ? 0 : 0.4)
+            }
 
             Circle()
                 .fill(color)
-                .frame(width: 8, height: 8)
+                .frame(width: 7, height: 7)
         }
         .onAppear {
             if color == FilTheme.online {
-                withAnimation(.easeInOut(duration: 1.5).repeatForever(autoreverses: false)) {
+                withAnimation(.easeInOut(duration: 1.8).repeatForever(autoreverses: false)) {
                     isPulsing = true
                 }
             }
@@ -325,20 +422,16 @@ struct PulsingDot: View {
     }
 }
 
-// MARK: - Shimmer Modifier
+// MARK: - Shimmer
 
 struct ShimmerModifier: ViewModifier {
-    @State private var phase: CGFloat = 0
+    @State private var phase: CGFloat = -200
 
     func body(content: Content) -> some View {
         content
             .overlay(
                 LinearGradient(
-                    gradient: Gradient(colors: [
-                        Color.clear,
-                        Color.white.opacity(0.05),
-                        Color.clear,
-                    ]),
+                    colors: [.clear, Color.white.opacity(0.04), .clear],
                     startPoint: .leading,
                     endPoint: .trailing
                 )
@@ -349,7 +442,7 @@ struct ShimmerModifier: ViewModifier {
                     }
                 }
             )
-            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .clipShape(RoundedRectangle(cornerRadius: 16))
     }
 }
 

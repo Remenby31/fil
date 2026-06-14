@@ -27,25 +27,8 @@ struct TerminalSessionView: View {
                     let newSize = currentFontSize * value.magnification
                     store.send(.fontSizeChanged(newSize))
                 }
-                .onEnded { value in
+                .onEnded { _ in
                     currentFontSize = store.fontSize
-                }
-        )
-        .gesture(
-            DragGesture(minimumDistance: 50)
-                .onEnded { value in
-                    let horizontal = value.translation.width
-                    let vertical = value.translation.height
-
-                    if abs(horizontal) > abs(vertical) {
-                        if horizontal > 0 {
-                            store.send(.previousSession)
-                        } else {
-                            store.send(.nextSession)
-                        }
-                    } else if vertical > 50 {
-                        dismiss()
-                    }
                 }
         )
         .onAppear {
@@ -56,51 +39,52 @@ struct TerminalSessionView: View {
         .statusBarHidden(true)
     }
 
-    // MARK: - Top Bar
+    // MARK: - Top Bar (compact, modern)
 
     private var topBar: some View {
-        HStack {
-            Button {
-                dismiss()
-            } label: {
+        HStack(spacing: 12) {
+            Button { dismiss() } label: {
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(FilTheme.cloud.opacity(0.6))
-                    .frame(width: 36, height: 36)
-                    .background(FilTheme.elevated)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(FilTheme.cloud.opacity(0.5))
+                    .frame(width: 32, height: 32)
+                    .background(.ultraThinMaterial.opacity(0.3))
                     .clipShape(Circle())
             }
 
-            Spacer()
+            // Session info
+            HStack(spacing: 8) {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(store.isConnected ? FilTheme.filGreen : FilTheme.error)
+                    .frame(width: 3, height: 18)
 
-            VStack(spacing: 2) {
-                Text(store.session.shell)
-                    .font(.system(size: 14, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(FilTheme.cloud)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(store.session.shell)
+                        .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(FilTheme.cloud)
 
-                HStack(spacing: 6) {
                     Text(store.session.cwd)
-                        .font(.system(size: 11))
-                        .foregroundStyle(FilTheme.cloud.opacity(0.4))
-
-                    if let latency = store.latencyMs {
-                        Text("\(latency)ms")
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(latency < 100 ? FilTheme.filGreen : FilTheme.warning)
-                    }
+                        .font(.system(size: 10))
+                        .foregroundStyle(FilTheme.cloud.opacity(0.35))
+                        .lineLimit(1)
                 }
             }
 
             Spacer()
 
-            Circle()
-                .fill(store.isConnected ? FilTheme.online : FilTheme.error)
-                .frame(width: 8, height: 8)
-                .frame(width: 36, height: 36)
+            if let latency = store.latencyMs {
+                Text("\(latency)ms")
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundStyle(latency < 100 ? FilTheme.filGreen.opacity(0.6) : FilTheme.warning.opacity(0.6))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(FilTheme.surface)
+                    .clipShape(Capsule())
+            }
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(FilTheme.surface)
+        .padding(.vertical, 8)
+        .background(FilTheme.depth.opacity(0.8))
     }
 
     // MARK: - Terminal Area
@@ -113,36 +97,41 @@ struct TerminalSessionView: View {
     // MARK: - Disconnected Overlay
 
     private var disconnectedOverlay: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "wifi.exclamationmark")
-                .font(.system(size: 36))
-                .foregroundStyle(FilTheme.error)
+        ZStack {
+            Color.black.opacity(0.6).ignoresSafeArea()
 
-            Text("Connection lost")
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(FilTheme.cloud)
+            VStack(spacing: 20) {
+                Image(systemName: "wifi.exclamationmark")
+                    .font(.system(size: 32))
+                    .foregroundStyle(FilTheme.error)
 
-            Text("The connection to this session was interrupted.")
-                .font(.system(size: 14))
-                .foregroundStyle(FilTheme.cloud.opacity(0.5))
-                .multilineTextAlignment(.center)
+                VStack(spacing: 6) {
+                    Text("Connection lost")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(FilTheme.cloud)
 
-            Button {
-                store.send(.reconnectTapped)
-            } label: {
-                Text("Reconnect")
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(FilTheme.void_)
-                    .padding(.horizontal, 24)
-                    .padding(.vertical, 12)
-                    .background(FilTheme.filGreen)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    Text("Trying to reconnect...")
+                        .font(.system(size: 14))
+                        .foregroundStyle(FilTheme.cloud.opacity(0.4))
+                }
+
+                Button {
+                    store.send(.reconnectTapped)
+                } label: {
+                    Text("Reconnect")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(FilTheme.void_)
+                        .padding(.horizontal, 28)
+                        .padding(.vertical, 10)
+                        .background(FilTheme.filGreen)
+                        .clipShape(Capsule())
+                }
             }
+            .padding(28)
+            .background(FilTheme.surface)
+            .clipShape(RoundedRectangle(cornerRadius: 20))
         }
-        .padding(32)
-        .background(.ultraThinMaterial.opacity(0.95))
-        .clipShape(RoundedRectangle(cornerRadius: 20))
-        .padding(40)
+        .transition(.opacity)
     }
 
     // MARK: - Extra Keys Bar
@@ -207,7 +196,7 @@ struct ExtraKeysBar: View {
     ]
 
     var body: some View {
-        HStack(spacing: 5) {
+        HStack(spacing: 4) {
             ForEach(keys) { key in
                 Button {
                     if key.label == "ctrl" {
@@ -221,25 +210,21 @@ struct ExtraKeysBar: View {
                     }
                 } label: {
                     Text(key.label)
-                        .font(.system(size: 13, weight: .medium, design: .monospaced))
-                        .foregroundStyle(
-                            (key.label == "ctrl" && ctrlActive) || (key.label == "alt" && altActive)
-                                ? FilTheme.filGreen
-                                : FilTheme.cloud.opacity(0.7)
-                        )
+                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                        .foregroundStyle(isActive(key) ? FilTheme.filGreen : FilTheme.cloud.opacity(0.6))
                         .frame(maxWidth: .infinity)
-                        .frame(height: 38)
-                        .background(
-                            (key.label == "ctrl" && ctrlActive) || (key.label == "alt" && altActive)
-                                ? FilTheme.filGreen.opacity(0.15)
-                                : FilTheme.elevated
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: 7))
+                        .frame(height: 36)
+                        .background(isActive(key) ? FilTheme.filGreen.opacity(0.12) : FilTheme.elevated.opacity(0.6))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
             }
         }
         .padding(.horizontal, 6)
-        .padding(.vertical, 6)
-        .background(FilTheme.surface)
+        .padding(.vertical, 5)
+        .background(FilTheme.depth)
+    }
+
+    private func isActive(_ key: KeyDef) -> Bool {
+        (key.label == "ctrl" && ctrlActive) || (key.label == "alt" && altActive)
     }
 }
