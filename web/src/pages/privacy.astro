@@ -1,0 +1,80 @@
+---
+const title = "Privacy Policy — Fil";
+---
+
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{title}</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet" />
+</head>
+
+<body>
+  <div class="container">
+    <nav>
+      <a href="/" class="logo">fil<span>.</span></a>
+    </nav>
+
+    <article>
+      <h1>Privacy Policy</h1>
+      <p class="updated">Last updated: June 14, 2026</p>
+
+      <h2>What Fil collects</h2>
+      <p>Fil collects the minimum data necessary to operate:</p>
+      <ul>
+        <li><strong>Account info</strong>: your email address (from Sign in with Apple or GitHub) to identify your account.</li>
+        <li><strong>Device info</strong>: device name, OS, and hostname to display your machines in the app.</li>
+        <li><strong>Session metadata</strong>: shell type, working directory, session duration. Used to display your active sessions.</li>
+      </ul>
+
+      <h2>What Fil does NOT collect</h2>
+      <ul>
+        <li><strong>Terminal content</strong>: your terminal data is end-to-end encrypted. The hub routes encrypted bytes without ever reading them.</li>
+        <li><strong>Commands</strong>: we cannot see what you type or what your terminal outputs.</li>
+        <li><strong>Files</strong>: we never access your filesystem.</li>
+        <li><strong>Analytics/tracking</strong>: no third-party analytics, no tracking pixels, no ads.</li>
+      </ul>
+
+      <h2>Self-hosted option</h2>
+      <p>If you self-host the Fil hub, all data stays on your own infrastructure. We have zero access to self-hosted instances.</p>
+
+      <h2>Data storage</h2>
+      <p>Account and device data is stored in a SQLite database on the hub server. Session data is ephemeral and exists only in memory while sessions are active.</p>
+
+      <h2>Data deletion</h2>
+      <p>You can delete your account and all associated data at any time from the app settings. Uninstalling the daemon removes all local configuration.</p>
+
+      <h2>Contact</h2>
+      <p>Questions? Email <a href="mailto:hello@fil.sh">hello@fil.sh</a>.</p>
+    </article>
+
+    <footer>
+      <a href="/" class="logo">fil<span>.</span></a>
+      <div class="copy">© 2026 Fil. MIT License.</div>
+    </footer>
+  </div>
+</body>
+</html>
+
+<style>
+  :root { --void: #0A0A0F; --fil-green: #00D4AA; --cloud: #FAFAFA; --surface: #1A1A2E; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Inter', -apple-system, sans-serif; background: var(--void); color: var(--cloud); }
+  .container { max-width: 720px; margin: 0 auto; padding: 0 24px; }
+  nav { padding: 20px 0; }
+  .logo { font-size: 24px; font-weight: 300; color: var(--cloud); text-decoration: none; }
+  .logo span { color: var(--fil-green); }
+  article { padding: 60px 0; }
+  h1 { font-size: 32px; font-weight: 300; margin-bottom: 8px; }
+  .updated { font-size: 13px; color: rgba(250,250,250,0.3); margin-bottom: 40px; }
+  h2 { font-size: 18px; font-weight: 600; margin: 32px 0 12px; }
+  p { font-size: 15px; color: rgba(250,250,250,0.7); line-height: 1.7; margin-bottom: 12px; }
+  ul { padding-left: 20px; margin-bottom: 16px; }
+  li { font-size: 15px; color: rgba(250,250,250,0.7); line-height: 1.7; margin-bottom: 6px; }
+  li strong { color: var(--cloud); }
+  a { color: var(--fil-green); }
+  footer { padding: 40px 0; border-top: 1px solid rgba(255,255,255,0.04); text-align: center; }
+  footer .logo { font-size: 20px; display: block; margin-bottom: 12px; }
+  .copy { font-size: 12px; color: rgba(250,250,250,0.2); }
+</style>

@@ -1,0 +1,222 @@
+---
+const title = "Fil — Your terminals, everywhere.";
+const description = "Access your Mac terminal sessions from your iPhone. One thread connecting all your devices.";
+---
+
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{title}</title>
+  <meta name="description" content={description} />
+  <meta property="og:title" content={title} />
+  <meta property="og:description" content={description} />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://fil.sh" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content={title} />
+  <meta name="twitter:description" content={description} />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+</head>
+
+<body>
+  <div class="container">
+    <nav>
+      <a href="/" class="logo">fil<span>.</span></a>
+      <div class="nav-links">
+        <a href="#features" class="nav-link">Features</a>
+        <a href="#how" class="nav-link">How it works</a>
+        <a href="https://github.com/Remenby31/fil" class="nav-link">GitHub</a>
+      </div>
+    </nav>
+
+    <section class="hero">
+      <h1>Your terminals,<br><em>everywhere</em>.</h1>
+      <p>Open a terminal on your Mac. Pick it up on your iPhone. Fil is the invisible thread that connects your sessions across devices.</p>
+      <div class="hero-cta">
+        <a href="#how" class="btn btn-primary">Get Started</a>
+        <a href="https://github.com/Remenby31/fil" class="btn btn-secondary">View on GitHub</a>
+      </div>
+
+      <div class="cli-preview">
+        <div class="cli-bar">
+          <div class="cli-dot"></div>
+          <div class="cli-dot"></div>
+          <div class="cli-dot"></div>
+        </div>
+        <div class="cli-body">
+          <div><span class="dim">$</span> <span class="cmd">brew install fil</span></div>
+          <div><span class="dim">$</span> <span class="cmd">fil setup</span></div>
+          <br/>
+          <div><span class="ok">  ✓</span> <span class="dim">Signed in as</span> <span class="cmd">Baptiste</span></div>
+          <div><span class="ok">  ✓</span> <span class="dim">Device</span> <span class="cmd">Mac-mini</span> <span class="dim">registered</span></div>
+          <div><span class="ok">  ✓</span> <span class="dim">Connected to hub</span></div>
+          <br/>
+          <div><span class="dim">  Ready. Open the Fil app on your iPhone.</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="features" id="features">
+      <h2>Everything you need.</h2>
+      <div class="feature-grid">
+        <div class="feature-card">
+          <span class="feature-icon">📱</span>
+          <h3>Real-time session access</h3>
+          <p>See all your terminal sessions from your iPhone. Tap to connect. Type commands. Full terminal, native iOS experience.</p>
+        </div>
+        <div class="feature-card">
+          <span class="feature-icon">🖥</span>
+          <h3>Multi-machine</h3>
+          <p>Connect all your Macs. One hub aggregates sessions from every device. Switch between machines in a tap.</p>
+        </div>
+        <div class="feature-card">
+          <span class="feature-icon">🔔</span>
+          <h3>Smart notifications</h3>
+          <p>Know when your build finishes, your agent needs approval, or a command fails. No noise, only what matters.</p>
+        </div>
+        <div class="feature-card">
+          <span class="feature-icon">🏝</span>
+          <h3>Dynamic Island</h3>
+          <p>Long-running processes live on your Dynamic Island. See the command, elapsed time, and tap to jump in.</p>
+        </div>
+        <div class="feature-card">
+          <span class="feature-icon">🔒</span>
+          <h3>End-to-end encrypted</h3>
+          <p>Noise Protocol, ChaCha20-Poly1305. The hub routes encrypted bytes without ever seeing your data.</p>
+        </div>
+        <div class="feature-card">
+          <span class="feature-icon">🏠</span>
+          <h3>Self-hostable</h3>
+          <p>Run your own hub with a single Docker command. Your data, your infrastructure. Or use our hosted version.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="how" id="how">
+      <h2>Three steps. Two minutes.</h2>
+      <div class="steps">
+        <div class="step">
+          <div class="step-number">1</div>
+          <h3>Install on your Mac</h3>
+          <p>One command. Fil detects your terminal and configures everything.</p>
+          <code>brew install fil</code>
+        </div>
+        <div class="step">
+          <div class="step-number">2</div>
+          <h3>Sign in</h3>
+          <p>Sign in with Apple or GitHub. Your devices are linked instantly.</p>
+          <code>fil setup</code>
+        </div>
+        <div class="step">
+          <div class="step-number">3</div>
+          <h3>Open on your iPhone</h3>
+          <p>Your sessions are already there. Tap one and you're in.</p>
+          <code>That's it.</code>
+        </div>
+      </div>
+    </section>
+
+    <section class="selfhost">
+      <h2>Own your data.</h2>
+      <p>Run the Fil hub on your own server. One Docker command, zero dependencies.</p>
+      <code>docker run -d -p 3100:3100 fil/hub</code>
+    </section>
+
+    <footer>
+      <a href="/" class="logo">fil<span>.</span></a>
+      <div class="links">
+        <a href="https://github.com/Remenby31/fil">GitHub</a>
+        <a href="/privacy">Privacy</a>
+        <a href="mailto:hello@fil.sh">Contact</a>
+      </div>
+      <div class="copy">© 2026 Fil. MIT License.</div>
+    </footer>
+  </div>
+</body>
+</html>
+
+<style>
+  :root {
+    --void: #0A0A0F;
+    --fil-green: #00D4AA;
+    --surface: #1A1A2E;
+    --cloud: #FAFAFA;
+    --depth: #0D1117;
+    --elevated: #161B22;
+    --fil-light: #55EFC4;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, sans-serif;
+    background: var(--void);
+    color: var(--cloud);
+    overflow-x: hidden;
+  }
+  .container { max-width: 1100px; margin: 0 auto; padding: 0 24px; }
+
+  nav { padding: 20px 0; display: flex; align-items: center; justify-content: space-between; }
+  .logo { font-size: 24px; font-weight: 300; color: var(--cloud); text-decoration: none; }
+  .logo span { color: var(--fil-green); }
+  .nav-link { color: rgba(250,250,250,0.5); text-decoration: none; font-size: 14px; transition: color 0.2s; }
+  .nav-link:hover { color: var(--cloud); }
+  .nav-links { display: flex; gap: 28px; align-items: center; }
+
+  .hero { text-align: center; padding: 100px 0 80px; }
+  .hero h1 { font-size: clamp(36px, 5vw, 64px); font-weight: 300; line-height: 1.15; margin-bottom: 20px; letter-spacing: -1px; }
+  .hero h1 em { font-style: normal; color: var(--fil-green); }
+  .hero p { font-size: 18px; color: rgba(250,250,250,0.5); max-width: 520px; margin: 0 auto 40px; line-height: 1.6; }
+  .hero-cta { display: inline-flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
+
+  .btn { display: inline-flex; align-items: center; gap: 8px; padding: 14px 28px; border-radius: 10px; font-size: 15px; font-weight: 500; text-decoration: none; transition: all 0.2s; }
+  .btn-primary { background: var(--fil-green); color: var(--void); }
+  .btn-primary:hover { background: var(--fil-light); }
+  .btn-secondary { background: var(--surface); color: var(--cloud); border: 1px solid rgba(255,255,255,0.08); }
+  .btn-secondary:hover { border-color: rgba(255,255,255,0.2); }
+
+  .cli-preview { max-width: 600px; margin: 60px auto 0; background: var(--depth); border: 1px solid rgba(255,255,255,0.06); border-radius: 12px; overflow: hidden; }
+  .cli-bar { padding: 10px 16px; display: flex; gap: 6px; background: rgba(255,255,255,0.02); }
+  .cli-dot { width: 10px; height: 10px; border-radius: 50%; background: rgba(255,255,255,0.1); }
+  .cli-body { padding: 20px; font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 1.9; }
+  .prompt { color: var(--fil-green); }
+  .cmd { color: var(--cloud); }
+  .dim { color: rgba(250,250,250,0.35); }
+  .ok { color: var(--fil-green); }
+
+  .features { padding: 100px 0; }
+  .features h2 { text-align: center; font-size: 32px; font-weight: 300; margin-bottom: 60px; }
+  .feature-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
+  .feature-card { background: var(--surface); border: 1px solid rgba(255,255,255,0.04); border-radius: 14px; padding: 28px; }
+  .feature-icon { font-size: 28px; margin-bottom: 16px; display: block; }
+  .feature-card h3 { font-size: 17px; font-weight: 600; margin-bottom: 8px; }
+  .feature-card p { font-size: 14px; color: rgba(250,250,250,0.5); line-height: 1.6; }
+
+  .how { padding: 80px 0; }
+  .how h2 { text-align: center; font-size: 32px; font-weight: 300; margin-bottom: 60px; }
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 32px; }
+  .step { text-align: center; }
+  .step-number { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; border-radius: 50%; background: var(--fil-green); color: var(--void); font-weight: 700; font-size: 16px; margin-bottom: 16px; }
+  .step h3 { font-size: 16px; font-weight: 600; margin-bottom: 8px; }
+  .step p { font-size: 14px; color: rgba(250,250,250,0.5); line-height: 1.6; }
+  .step code { display: inline-block; margin-top: 8px; padding: 6px 14px; background: var(--depth); border-radius: 6px; font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--fil-green); border: none; }
+
+  .selfhost { padding: 80px 0; text-align: center; }
+  .selfhost h2 { font-size: 28px; font-weight: 300; margin-bottom: 12px; }
+  .selfhost p { color: rgba(250,250,250,0.5); font-size: 15px; margin-bottom: 28px; }
+  .selfhost code { display: inline-block; padding: 14px 28px; background: var(--depth); border: 1px solid rgba(255,255,255,0.06); border-radius: 10px; font-family: 'JetBrains Mono', monospace; font-size: 14px; color: var(--fil-green); }
+
+  footer { padding: 60px 0 40px; border-top: 1px solid rgba(255,255,255,0.04); text-align: center; }
+  footer .logo { font-size: 20px; display: block; margin-bottom: 16px; }
+  footer .links { display: flex; justify-content: center; gap: 24px; margin-bottom: 20px; }
+  footer a { color: rgba(250,250,250,0.4); text-decoration: none; font-size: 13px; transition: color 0.2s; }
+  footer a:hover { color: var(--cloud); }
+  .copy { font-size: 12px; color: rgba(250,250,250,0.2); }
+
+  @media (max-width: 768px) {
+    .steps { grid-template-columns: 1fr; gap: 40px; }
+    .hero { padding: 60px 0 40px; }
+    .nav-links { display: none; }
+  }
+</style>
