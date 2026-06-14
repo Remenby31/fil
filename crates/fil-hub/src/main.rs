@@ -37,6 +37,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/health", get(routes::health_check))
         .route("/auth/github/start", get(auth::github_auth_start))
         .route("/auth/github/callback", get(auth::github_auth_callback))
+        .route("/auth/apple/callback", post(auth::apple_auth_callback))
         // Authenticated routes
         .route("/devices", post(routes::register_device))
         .route("/devices", get(routes::list_devices))

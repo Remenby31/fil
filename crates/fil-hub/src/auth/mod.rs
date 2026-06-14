@@ -1,8 +1,10 @@
 mod jwt;
 mod github;
+mod apple;
 
 pub use jwt::verify_token;
 pub use github::{github_auth_start, github_auth_callback};
+pub use apple::apple_auth_callback;
 
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;

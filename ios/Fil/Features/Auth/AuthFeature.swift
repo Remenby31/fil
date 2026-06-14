@@ -80,14 +80,39 @@ struct AuthFeature {
                     state.errorMessage = "Failed to get Apple ID credential"
                     return .none
                 }
+                let email = credential.email
+                let fullName = [credential.fullName?.givenName, credential.fullName?.familyName]
+                    .compactMap { $0 }
+                    .joined(separator: " ")
+                let userIdentifier = credential.user
+
                 return .run { send in
                     do {
                         let hubURL = TokenStorage.loadHubUrl()
-                        let client = HubClient(baseURL: URL(string: hubURL)!)
-                        // TODO: implement Apple auth endpoint on hub
-                        // For now, store a placeholder
-                        TokenStorage.saveToken("apple-\(tokenString.prefix(20))")
-                        await send(.loginSucceeded)
+                        let url = URL(string: "\(hubURL)/auth/apple/callback")!
+                        var request = URLRequest(url: url)
+                        request.httpMethod = "POST"
+                        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+                        let body: [String: Any?] = [
+                            "identity_token": tokenString,
+                            "user_id": userIdentifier,
+                            "email": email,
+                            "full_name": fullName.isEmpty ? nil : fullName,
+                        ]
+                        request.httpBody = try JSONSerialization.data(
+                            withJSONObject: body.compactMapValues { $0 }
+                        )
+
+                        let (data, response) = try await URLSession.shared.data(for: request)
+                        guard let http = response as? HTTPURLResponse,
+                              (200...299).contains(http.statusCode) else {
+                            throw HubError.httpError((response as? HTTPURLResponse)?.statusCode ?? 500)
+                        }
+
+                        struct AuthResponse: Decodable { let token: String }
+                        let authResponse = try JSONDecoder().decode(AuthResponse.self, from: data)
+                        await send(.hubAuthCompleted(.success(authResponse.token)))
                     } catch {
                         await send(.hubAuthCompleted(.failure(error)))
                     }
