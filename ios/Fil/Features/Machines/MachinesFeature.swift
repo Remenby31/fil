@@ -7,6 +7,7 @@ struct MachinesFeature {
     struct State: Equatable {
         var machines: [Machine] = []
         var isLoading = false
+        var isConnected = true
         var errorMessage: String?
         var selectedSession: Session?
         @Presents var terminal: TerminalFeature.State?
@@ -16,9 +17,11 @@ struct MachinesFeature {
         case onAppear
         case refreshTapped
         case sessionsLoaded(Result<[Machine], Error>)
+        case connectionStatusChanged(Bool)
         case sessionTapped(Session)
         case terminal(PresentationAction<TerminalFeature.Action>)
         case logoutTapped
+        case dismissError
     }
 
     @Dependency(\.hubClient) var hubClient
@@ -48,15 +51,27 @@ struct MachinesFeature {
                 state.errorMessage = error.localizedDescription
                 return .none
 
+            case .connectionStatusChanged(let connected):
+                state.isConnected = connected
+                return .none
+
             case .sessionTapped(let session):
                 state.selectedSession = session
                 state.terminal = TerminalFeature.State(session: session)
                 return .none
 
+            case .terminal(.presented(.dismiss)):
+                state.terminal = nil
+                return .send(.refreshTapped)
+
             case .terminal:
                 return .none
 
             case .logoutTapped:
+                return .none
+
+            case .dismissError:
+                state.errorMessage = nil
                 return .none
             }
         }

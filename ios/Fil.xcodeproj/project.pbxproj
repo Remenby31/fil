@@ -15,11 +15,14 @@
 		3ED9F2613EE8C9A85397C1E3 /* MachinesFeature.swift in Sources */ = {isa = PBXBuildFile; fileRef = B66331C0E221B9D5D0C07D36 /* MachinesFeature.swift */; };
 		401BA633C36CCB008EEA3C92 /* FilLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FA5A973D753D206DC888CFA /* FilLiveActivity.swift */; };
 		54DC2B6BA13C38884C6FACCC /* AppFeature.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8C23BC2602A63EE215567C9 /* AppFeature.swift */; };
+		56B84B52B3D4E9F2994C92BB /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 016799636AB57E35AAD48B7C /* SettingsView.swift */; };
 		585A63B3A3643A77A01AE3C5 /* FilNotification.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0A495137D637D6F090DB9CC /* FilNotification.swift */; };
 		6416557D9B1011085DF0EFFA /* FilWidgets.swift in Sources */ = {isa = PBXBuildFile; fileRef = D78B13EF942C2AB03E809F12 /* FilWidgets.swift */; };
 		65CA9C53D110FD5F9F07545C /* FilActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73BA45890F6AA7B39E5D41F3 /* FilActivity.swift */; };
 		690798202BBF76A8EAA25B17 /* FilTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAD3E1A1C80093558FB61F79 /* FilTheme.swift */; };
 		698C3668FF348506042176F5 /* FilApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = F866DD64C5272CF45F4867A3 /* FilApp.swift */; };
+		840E239432FB2087402559F1 /* HubWebSocket.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEFFC4E235C1135FAA311A5D /* HubWebSocket.swift */; };
+		89D3FBA3068FDB899F26F624 /* GitHubAuthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04EE267190F3F78D3C3C58A8 /* GitHubAuthService.swift */; };
 		962FE739E505C946A094B104 /* TerminalFeature.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA4C99E7EDCA3E7F134CB270 /* TerminalFeature.swift */; };
 		A609899603D07CC5DF4B505A /* TerminalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66A28AAEFD7F576095710B13 /* TerminalView.swift */; };
 		A8764E0D8EFECF2E89FB9FAC /* TokenStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 886301ABA9EB06A422CAA659 /* TokenStorage.swift */; };
@@ -30,6 +33,8 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		016799636AB57E35AAD48B7C /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		04EE267190F3F78D3C3C58A8 /* GitHubAuthService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHubAuthService.swift; sourceTree = "<group>"; };
 		36321679F399CD0213F27A66 /* FilWidgets.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FilWidgets.entitlements; sourceTree = "<group>"; };
 		47CA74EAE88D9E08F9453083 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		581679C5AD614C0390AD779F /* FilWidgets.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = FilWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -47,6 +52,7 @@
 		B66331C0E221B9D5D0C07D36 /* MachinesFeature.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MachinesFeature.swift; sourceTree = "<group>"; };
 		D78B13EF942C2AB03E809F12 /* FilWidgets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilWidgets.swift; sourceTree = "<group>"; };
 		DAD3E1A1C80093558FB61F79 /* FilTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilTheme.swift; sourceTree = "<group>"; };
+		DEFFC4E235C1135FAA311A5D /* HubWebSocket.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubWebSocket.swift; sourceTree = "<group>"; };
 		E0A495137D637D6F090DB9CC /* FilNotification.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilNotification.swift; sourceTree = "<group>"; };
 		F24E0F94DFA6D6B2E29BF4E8 /* .gitkeep */ = {isa = PBXFileReference; path = .gitkeep; sourceTree = "<group>"; };
 		F866DD64C5272CF45F4867A3 /* FilApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilApp.swift; sourceTree = "<group>"; };
@@ -70,6 +76,7 @@
 		0D73368358A6E02FF521C4BF /* Settings */ = {
 			isa = PBXGroup;
 			children = (
+				016799636AB57E35AAD48B7C /* SettingsView.swift */,
 			);
 			path = Settings;
 			sourceTree = "<group>";
@@ -87,6 +94,7 @@
 			children = (
 				7368CE7397E0E2243DA2A64B /* AuthFeature.swift */,
 				65BF9A1115E3EA9EEAB9F972 /* AuthView.swift */,
+				04EE267190F3F78D3C3C58A8 /* GitHubAuthService.swift */,
 			);
 			path = Auth;
 			sourceTree = "<group>";
@@ -106,6 +114,7 @@
 			isa = PBXGroup;
 			children = (
 				910529E125DDE8743EAD1019 /* HubClient.swift */,
+				DEFFC4E235C1135FAA311A5D /* HubWebSocket.swift */,
 			);
 			path = Network;
 			sourceTree = "<group>";
@@ -313,10 +322,13 @@
 				698C3668FF348506042176F5 /* FilApp.swift in Sources */,
 				585A63B3A3643A77A01AE3C5 /* FilNotification.swift in Sources */,
 				690798202BBF76A8EAA25B17 /* FilTheme.swift in Sources */,
+				89D3FBA3068FDB899F26F624 /* GitHubAuthService.swift in Sources */,
 				1AD60A41AAB6C27D63C3566E /* HubClient.swift in Sources */,
+				840E239432FB2087402559F1 /* HubWebSocket.swift in Sources */,
 				1E506B734B0D86F890ADA6D9 /* Machine.swift in Sources */,
 				3ED9F2613EE8C9A85397C1E3 /* MachinesFeature.swift in Sources */,
 				E897C1FEE5EE4ACBB9B15769 /* MachinesView.swift in Sources */,
+				56B84B52B3D4E9F2994C92BB /* SettingsView.swift in Sources */,
 				962FE739E505C946A094B104 /* TerminalFeature.swift in Sources */,
 				A609899603D07CC5DF4B505A /* TerminalView.swift in Sources */,
 				A8764E0D8EFECF2E89FB9FAC /* TokenStorage.swift in Sources */,
