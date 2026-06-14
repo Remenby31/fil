@@ -1,6 +1,7 @@
 mod config;
 mod hub;
 mod pty;
+mod setup;
 mod terminal;
 
 use anyhow::Result;
@@ -25,6 +26,8 @@ enum Commands {
         #[arg(long)]
         hub: Option<String>,
     },
+    /// Remove Fil configuration and restore terminal settings
+    Uninstall,
     /// Show version information
     Version,
 }
@@ -42,81 +45,14 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Setup { hub }) => run_setup(hub).await,
+        Some(Commands::Setup { hub }) => setup::run_setup(hub).await,
+        Some(Commands::Uninstall) => setup::run_uninstall(),
         Some(Commands::Version) => {
             println!("fil v{}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
         None => run_proxy().await,
     }
-}
-
-async fn run_setup(hub_url: Option<String>) -> Result<()> {
-    println!("\n  fil v{}\n", env!("CARGO_PKG_VERSION"));
-
-    let mut config = DaemonConfig::load();
-
-    if let Some(url) = hub_url {
-        config.hub_url = url;
-    }
-
-    println!("  Opening browser for GitHub authentication...\n");
-
-    let auth_url = format!("{}/auth/github/start", config.hub_url);
-    if open::that(&auth_url).is_err() {
-        println!("  Open this URL in your browser:");
-        println!("  {auth_url}\n");
-    }
-
-    println!("  Waiting for authentication...");
-    println!("  (Paste the JSON response from the browser here)");
-
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input)?;
-
-    #[derive(serde::Deserialize)]
-    struct AuthResponse {
-        token: String,
-        user_id: String,
-    }
-
-    let auth: AuthResponse = serde_json::from_str(input.trim())?;
-    config.token = auth.token.clone();
-
-    // Register device
-    let hostname = gethostname::gethostname()
-        .to_string_lossy()
-        .to_string();
-    config.device_name = hostname.clone();
-
-    let client = reqwest::Client::new();
-    let resp = client
-        .post(format!("{}/devices", config.hub_url))
-        .header("Authorization", format!("Bearer {}", config.token))
-        .json(&serde_json::json!({
-            "name": hostname,
-            "os": std::env::consts::OS,
-            "hostname": hostname,
-        }))
-        .send()
-        .await?;
-
-    #[derive(serde::Deserialize)]
-    struct DeviceResp {
-        id: String,
-    }
-
-    let device: DeviceResp = resp.json().await?;
-    config.device_id = device.id;
-
-    config.save()?;
-
-    println!("\n  \x1b[32m✓\x1b[0m Signed in");
-    println!("  \x1b[32m✓\x1b[0m Device \x1b[1m{}\x1b[0m registered", config.device_name);
-    println!("  \x1b[32m✓\x1b[0m Config saved to {:?}", DaemonConfig::config_path());
-    println!("\n  Restart your terminal to activate fil.\n");
-
-    Ok(())
 }
 
 async fn run_proxy() -> Result<()> {
@@ -129,7 +65,6 @@ async fn run_proxy() -> Result<()> {
 
     let session_id = Uuid::new_v4().to_string();
 
-    // Start hub connection in background if configured
     if config.is_configured() {
         let hub_config = config.clone();
         let sid = session_id.clone();
@@ -144,13 +79,9 @@ async fn run_proxy() -> Result<()> {
 
             let tx = hub_conn.sender();
 
-            // Send session created
-            let created_msg = hub::build_session_created(
-                &sid, &shell_name, &cwd, 80, 24,
-            );
+            let created_msg = hub::build_session_created(&sid, &shell_name, &cwd, 80, 24);
             tx.send(created_msg).await.ok();
 
-            // Start heartbeat
             let hb_tx = tx.clone();
             let hb_device_id = hub_config.device_id.clone();
             let hb_sid = sid.clone();
@@ -186,10 +117,7 @@ async fn run_proxy() -> Result<()> {
         debug!("no config found — running in offline mode (run 'fil setup' first)");
     }
 
-    // Put stdin in raw mode
     let _raw_guard = terminal::RawModeGuard::new()?;
-
-    // Run the proxy
     let exit_code = pty::proxy_loop(pty_process).await?;
 
     debug!(exit_code, "shell exited");
