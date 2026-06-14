@@ -13,7 +13,11 @@
 		1AD60A41AAB6C27D63C3566E /* HubClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 910529E125DDE8743EAD1019 /* HubClient.swift */; };
 		1E506B734B0D86F890ADA6D9 /* Machine.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF5A668ED84C8282C712960F /* Machine.swift */; };
 		3ED9F2613EE8C9A85397C1E3 /* MachinesFeature.swift in Sources */ = {isa = PBXBuildFile; fileRef = B66331C0E221B9D5D0C07D36 /* MachinesFeature.swift */; };
+		401BA633C36CCB008EEA3C92 /* FilLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FA5A973D753D206DC888CFA /* FilLiveActivity.swift */; };
 		54DC2B6BA13C38884C6FACCC /* AppFeature.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8C23BC2602A63EE215567C9 /* AppFeature.swift */; };
+		585A63B3A3643A77A01AE3C5 /* FilNotification.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0A495137D637D6F090DB9CC /* FilNotification.swift */; };
+		6416557D9B1011085DF0EFFA /* FilWidgets.swift in Sources */ = {isa = PBXBuildFile; fileRef = D78B13EF942C2AB03E809F12 /* FilWidgets.swift */; };
+		65CA9C53D110FD5F9F07545C /* FilActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73BA45890F6AA7B39E5D41F3 /* FilActivity.swift */; };
 		690798202BBF76A8EAA25B17 /* FilTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAD3E1A1C80093558FB61F79 /* FilTheme.swift */; };
 		698C3668FF348506042176F5 /* FilApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = F866DD64C5272CF45F4867A3 /* FilApp.swift */; };
 		962FE739E505C946A094B104 /* TerminalFeature.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA4C99E7EDCA3E7F134CB270 /* TerminalFeature.swift */; };
@@ -26,10 +30,14 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		36321679F399CD0213F27A66 /* FilWidgets.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FilWidgets.entitlements; sourceTree = "<group>"; };
 		47CA74EAE88D9E08F9453083 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		581679C5AD614C0390AD779F /* FilWidgets.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = FilWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		65BF9A1115E3EA9EEAB9F972 /* AuthView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthView.swift; sourceTree = "<group>"; };
 		66A28AAEFD7F576095710B13 /* TerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalView.swift; sourceTree = "<group>"; };
+		6FA5A973D753D206DC888CFA /* FilLiveActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilLiveActivity.swift; sourceTree = "<group>"; };
 		7368CE7397E0E2243DA2A64B /* AuthFeature.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthFeature.swift; sourceTree = "<group>"; };
+		73BA45890F6AA7B39E5D41F3 /* FilActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilActivity.swift; sourceTree = "<group>"; };
 		886301ABA9EB06A422CAA659 /* TokenStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenStorage.swift; sourceTree = "<group>"; };
 		910529E125DDE8743EAD1019 /* HubClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubClient.swift; sourceTree = "<group>"; };
 		99350430C019C884AEB57686 /* Fil.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Fil.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -37,7 +45,9 @@
 		AF5A668ED84C8282C712960F /* Machine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Machine.swift; sourceTree = "<group>"; };
 		B4AEC0FCF72E497E28644462 /* AppView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppView.swift; sourceTree = "<group>"; };
 		B66331C0E221B9D5D0C07D36 /* MachinesFeature.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MachinesFeature.swift; sourceTree = "<group>"; };
+		D78B13EF942C2AB03E809F12 /* FilWidgets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilWidgets.swift; sourceTree = "<group>"; };
 		DAD3E1A1C80093558FB61F79 /* FilTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilTheme.swift; sourceTree = "<group>"; };
+		E0A495137D637D6F090DB9CC /* FilNotification.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilNotification.swift; sourceTree = "<group>"; };
 		F24E0F94DFA6D6B2E29BF4E8 /* .gitkeep */ = {isa = PBXFileReference; path = .gitkeep; sourceTree = "<group>"; };
 		F866DD64C5272CF45F4867A3 /* FilApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilApp.swift; sourceTree = "<group>"; };
 		F8C23BC2602A63EE215567C9 /* AppFeature.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppFeature.swift; sourceTree = "<group>"; };
@@ -117,9 +127,21 @@
 			path = Terminal;
 			sourceTree = "<group>";
 		};
+		8DC9D939D4068C279DF4E58B /* FilWidgets */ = {
+			isa = PBXGroup;
+			children = (
+				6FA5A973D753D206DC888CFA /* FilLiveActivity.swift */,
+				36321679F399CD0213F27A66 /* FilWidgets.entitlements */,
+				D78B13EF942C2AB03E809F12 /* FilWidgets.swift */,
+			);
+			path = FilWidgets;
+			sourceTree = "<group>";
+		};
 		8FEC5EE03F753AFF9D3AA5CA /* Models */ = {
 			isa = PBXGroup;
 			children = (
+				73BA45890F6AA7B39E5D41F3 /* FilActivity.swift */,
+				E0A495137D637D6F090DB9CC /* FilNotification.swift */,
 				AF5A668ED84C8282C712960F /* Machine.swift */,
 				886301ABA9EB06A422CAA659 /* TokenStorage.swift */,
 			);
@@ -162,6 +184,7 @@
 			isa = PBXGroup;
 			children = (
 				998259B6B70680C743C7BFE3 /* Fil */,
+				8DC9D939D4068C279DF4E58B /* FilWidgets */,
 				E05FF5105A3939EF3A663C30 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -179,6 +202,7 @@
 			isa = PBXGroup;
 			children = (
 				99350430C019C884AEB57686 /* Fil.app */,
+				581679C5AD614C0390AD779F /* FilWidgets.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -207,6 +231,23 @@
 			productReference = 99350430C019C884AEB57686 /* Fil.app */;
 			productType = "com.apple.product-type.application";
 		};
+		C2FB45031069D63D9ED90741 /* FilWidgets */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F3AEC87C2A433871C9F62F9D /* Build configuration list for PBXNativeTarget "FilWidgets" */;
+			buildPhases = (
+				5F4AE239A095D91A0A71122D /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = FilWidgets;
+			packageProductDependencies = (
+			);
+			productName = FilWidgets;
+			productReference = 581679C5AD614C0390AD779F /* FilWidgets.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -217,6 +258,9 @@
 				LastUpgradeCheck = 2650;
 				TargetAttributes = {
 					5EEF59BCD09F21C04CDA4BA8 = {
+						DevelopmentTeam = "";
+					};
+					C2FB45031069D63D9ED90741 = {
 						DevelopmentTeam = "";
 					};
 				};
@@ -240,6 +284,7 @@
 			projectRoot = "";
 			targets = (
 				5EEF59BCD09F21C04CDA4BA8 /* Fil */,
+				C2FB45031069D63D9ED90741 /* FilWidgets */,
 			);
 		};
 /* End PBXProject section */
@@ -264,7 +309,9 @@
 				EAC7F77EA8E3EF3DDA9EA187 /* AppView.swift in Sources */,
 				04484E4AB3ED0EDFB810F4EF /* AuthFeature.swift in Sources */,
 				FC0247FD05FDD69F3603710E /* AuthView.swift in Sources */,
+				65CA9C53D110FD5F9F07545C /* FilActivity.swift in Sources */,
 				698C3668FF348506042176F5 /* FilApp.swift in Sources */,
+				585A63B3A3643A77A01AE3C5 /* FilNotification.swift in Sources */,
 				690798202BBF76A8EAA25B17 /* FilTheme.swift in Sources */,
 				1AD60A41AAB6C27D63C3566E /* HubClient.swift in Sources */,
 				1E506B734B0D86F890ADA6D9 /* Machine.swift in Sources */,
@@ -273,6 +320,15 @@
 				962FE739E505C946A094B104 /* TerminalFeature.swift in Sources */,
 				A609899603D07CC5DF4B505A /* TerminalView.swift in Sources */,
 				A8764E0D8EFECF2E89FB9FAC /* TokenStorage.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		5F4AE239A095D91A0A71122D /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				401BA633C36CCB008EEA3C92 /* FilLiveActivity.swift in Sources */,
+				6416557D9B1011085DF0EFFA /* FilWidgets.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -286,6 +342,7 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Fil;
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -308,6 +365,7 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Fil;
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -382,6 +440,46 @@
 				SWIFT_VERSION = 6.0;
 			};
 			name = Release;
+		};
+		9D07ECCC3A44AF826EA0C3A6 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_ENTITLEMENTS = FilWidgets/FilWidgets.entitlements;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = FilWidgets;
+				INFOPLIST_KEY_NSExtension_NSExtensionPointIdentifier = "com.apple.widgetkit-extension";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = sh.fil.app.widgets;
+				SDKROOT = iphoneos;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		CDE81540C56A6287733A3D24 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_ENTITLEMENTS = FilWidgets/FilWidgets.entitlements;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = FilWidgets;
+				INFOPLIST_KEY_NSExtension_NSExtensionPointIdentifier = "com.apple.widgetkit-extension";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = sh.fil.app.widgets;
+				SDKROOT = iphoneos;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
 		};
 		E1E73B7F609762FB21EFD24F /* Debug */ = {
 			isa = XCBuildConfiguration;
@@ -467,6 +565,15 @@
 			buildConfigurations = (
 				18A2C992A16FFFDBA1564402 /* Debug */,
 				5662F9E0C60C9818CA8DED62 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		F3AEC87C2A433871C9F62F9D /* Build configuration list for PBXNativeTarget "FilWidgets" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CDE81540C56A6287733A3D24 /* Debug */,
+				9D07ECCC3A44AF826EA0C3A6 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

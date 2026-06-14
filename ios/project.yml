@@ -35,6 +35,7 @@ targets:
     dependencies:
       - package: SwiftTerm
       - package: ComposableArchitecture
+      #- target: FilWidgets  # TODO: fix widget extension install issue
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: sh.fil.app
@@ -46,3 +47,21 @@ targets:
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         INFOPLIST_KEY_CFBundleDisplayName: Fil
+        INFOPLIST_KEY_NSSupportsLiveActivities: true
+
+  FilWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: FilWidgets
+    entitlements:
+      path: FilWidgets/FilWidgets.entitlements
+      properties: {}
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: sh.fil.app.widgets
+        GENERATE_INFOPLIST_FILE: true
+        INFOPLIST_KEY_CFBundleDisplayName: FilWidgets
+        INFOPLIST_KEY_NSExtension_NSExtensionPointIdentifier: com.apple.widgetkit-extension
+        ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME: WidgetBackground
+        SWIFT_EMIT_LOC_STRINGS: true
