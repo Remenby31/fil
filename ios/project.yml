@@ -12,7 +12,7 @@ settings:
     SWIFT_VERSION: "6.0"
     DEVELOPMENT_TEAM: 3SNT64YKAS
     MARKETING_VERSION: "0.1.0"
-    CURRENT_PROJECT_VERSION: 3
+    CURRENT_PROJECT_VERSION: 4
     SWIFT_STRICT_CONCURRENCY: complete
 
 packages:
@@ -32,19 +32,37 @@ targets:
     resources:
       - path: Fil/Assets.xcassets
       - path: Fil/Resources
+    entitlements:
+      path: Fil/Fil.entitlements
+      properties:
+        com.apple.developer.applesignin:
+          - Default
     dependencies:
       - package: SwiftTerm
       - package: ComposableArchitecture
+    info:
+      path: Fil/Info.plist
+      properties:
+        CFBundleDisplayName: Fil.sh
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        NSSupportsLiveActivities: true
+        ITSAppUsesNonExemptEncryption: false
+        CFBundleURLTypes:
+          - CFBundleURLSchemes:
+              - fil
+            CFBundleURLName: sh.fil.app
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: sh.fil.app
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        GENERATE_INFOPLIST_FILE: true
-        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: true
-        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: true
-        INFOPLIST_KEY_UILaunchScreen_Generation: true
-        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
-        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
-        INFOPLIST_KEY_CFBundleDisplayName: Fil.sh
-        INFOPLIST_KEY_NSSupportsLiveActivities: true
-        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: false
