@@ -44,6 +44,23 @@ struct MachinesFeature {
             case .sessionsLoaded(.success(let machines)):
                 state.isLoading = false
                 state.machines = machines
+                // Update Live Activity
+                let totalSessions = machines.flatMap(\.sessions).count
+                let onlineMachines = machines.filter { $0.status == .online }
+                let machineName = onlineMachines.first?.name ?? ""
+                if totalSessions > 0 {
+                    if #available(iOS 16.2, *) {
+                        FilActivityManager.startOrUpdate(
+                            sessionCount: totalSessions,
+                            machineCount: onlineMachines.count,
+                            machineName: machineName
+                        )
+                    }
+                } else {
+                    if #available(iOS 16.2, *) {
+                        FilActivityManager.endAll()
+                    }
+                }
                 return .none
 
             case .sessionsLoaded(.failure(let error)):

@@ -3,67 +3,51 @@ import Foundation
 
 struct FilActivityAttributes: ActivityAttributes {
     public struct ContentState: Codable, Hashable {
-        var elapsedSeconds: Int
-        var status: String
+        var sessionCount: Int
+        var machineCount: Int
+        var machineName: String
     }
 
-    var command: String
-    var deviceName: String
-    var sessionId: String
+    var startedAt: Date
 }
 
 @available(iOS 16.2, *)
-enum FilActivityManager: Sendable {
-    static func startActivity(
-        command: String,
-        deviceName: String,
-        sessionId: String
-    ) -> Activity<FilActivityAttributes>? {
-        let attributes = FilActivityAttributes(
-            command: command,
-            deviceName: deviceName,
-            sessionId: sessionId
+enum FilActivityManager {
+    static func startOrUpdate(sessionCount: Int, machineCount: Int, machineName: String) {
+        let state = FilActivityAttributes.ContentState(
+            sessionCount: sessionCount,
+            machineCount: machineCount,
+            machineName: machineName
         )
 
-        let initialState = FilActivityAttributes.ContentState(
-            elapsedSeconds: 0,
-            status: "running"
-        )
+        let existingIds = Activity<FilActivityAttributes>.activities.map(\.id)
 
-        do {
-            return try Activity.request(
+        if !existingIds.isEmpty {
+            for id in existingIds {
+                for activity in Activity<FilActivityAttributes>.activities where activity.id == id {
+                    let content = ActivityContent(state: state, staleDate: nil)
+                    nonisolated(unsafe) let a = activity
+                    Task.detached { await a.update(content) }
+                }
+            }
+        } else if sessionCount > 0 {
+            let attributes = FilActivityAttributes(startedAt: Date())
+            _ = try? Activity.request(
                 attributes: attributes,
-                content: .init(state: initialState, staleDate: nil),
+                content: .init(state: state, staleDate: nil),
                 pushType: nil
             )
-        } catch {
-            return nil
         }
     }
 
-    static func updateActivity(
-        _ activityId: String,
-        elapsedSeconds: Int
-    ) async {
-        let state = FilActivityAttributes.ContentState(
-            elapsedSeconds: elapsedSeconds,
-            status: "running"
-        )
-        for activity in Activity<FilActivityAttributes>.activities where activity.id == activityId {
-            await activity.update(.init(state: state, staleDate: nil))
-        }
-    }
-
-    static func endActivity(
-        _ activityId: String,
-        exitCode: Int
-    ) async {
+    static func endAll() {
         let finalState = FilActivityAttributes.ContentState(
-            elapsedSeconds: 0,
-            status: exitCode == 0 ? "completed" : "failed"
+            sessionCount: 0, machineCount: 0, machineName: ""
         )
-        for activity in Activity<FilActivityAttributes>.activities where activity.id == activityId {
-            await activity.end(.init(state: finalState, staleDate: nil), dismissalPolicy: .after(.now + 5))
+        let content = ActivityContent(state: finalState, staleDate: nil)
+        for activity in Activity<FilActivityAttributes>.activities {
+            nonisolated(unsafe) let a = activity
+            Task.detached { await a.end(content, dismissalPolicy: .immediate) }
         }
     }
 }
