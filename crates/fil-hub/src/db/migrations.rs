@@ -33,10 +33,15 @@ pub async fn run(pool: &SqlitePool) -> Result<()> {
     .await?;
     debug!("table 'devices' ready");
 
+    // Drop and recreate oauth_states to add cli_callback column
+    sqlx::query("DROP TABLE IF EXISTS oauth_states")
+        .execute(pool)
+        .await?;
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS oauth_states (
             state TEXT PRIMARY KEY,
             provider TEXT NOT NULL,
+            cli_callback TEXT DEFAULT '',
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         )",
     )

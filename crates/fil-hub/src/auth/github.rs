@@ -1,11 +1,16 @@
 use axum::extract::{Query, State};
 use axum::response::{IntoResponse, Redirect};
 use serde::Deserialize;
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 use uuid::Uuid;
 
 use crate::auth::jwt;
 use crate::state::AppState;
+
+#[derive(Deserialize)]
+pub struct StartParams {
+    cli_callback: Option<String>,
+}
 
 #[derive(Deserialize)]
 pub struct CallbackParams {
@@ -26,14 +31,21 @@ struct GitHubUser {
     name: Option<String>,
 }
 
-pub async fn github_auth_start(State(state): State<AppState>) -> impl IntoResponse {
+pub async fn github_auth_start(
+    State(state): State<AppState>,
+    Query(params): Query<StartParams>,
+) -> impl IntoResponse {
     let oauth_state = Uuid::new_v4().to_string();
 
-    // Store the state for CSRF protection
-    let _ = sqlx::query("INSERT INTO oauth_states (state, provider) VALUES (?, 'github')")
-        .bind(&oauth_state)
-        .execute(&state.db.pool)
-        .await;
+    // Store state + optional CLI callback for later
+    let cli_callback = params.cli_callback.unwrap_or_default();
+    let _ = sqlx::query(
+        "INSERT INTO oauth_states (state, provider, cli_callback) VALUES (?, 'github', ?)",
+    )
+    .bind(&oauth_state)
+    .bind(&cli_callback)
+    .execute(&state.db.pool)
+    .await;
 
     let url = format!(
         "https://github.com/login/oauth/authorize?client_id={}&redirect_uri={}/auth/github/callback&state={}&scope=user:email",
@@ -49,18 +61,21 @@ pub async fn github_auth_callback(
     State(state): State<AppState>,
     Query(params): Query<CallbackParams>,
 ) -> impl IntoResponse {
-    // Verify CSRF state
-    let state_exists = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM oauth_states WHERE state = ? AND provider = 'github'"
+    // Verify CSRF state and get cli_callback
+    let row = sqlx::query_as::<_, (String,)>(
+        "SELECT COALESCE(cli_callback, '') FROM oauth_states WHERE state = ? AND provider = 'github'",
     )
-        .bind(&params.state)
-        .fetch_one(&state.db.pool)
-        .await
-        .unwrap_or(0);
+    .bind(&params.state)
+    .fetch_optional(&state.db.pool)
+    .await
+    .unwrap_or(None);
 
-    if state_exists == 0 {
-        return (axum::http::StatusCode::BAD_REQUEST, "Invalid OAuth state").into_response();
-    }
+    let cli_callback = match row {
+        Some((cb,)) => cb,
+        None => {
+            return (axum::http::StatusCode::BAD_REQUEST, "Invalid OAuth state").into_response();
+        }
+    };
 
     // Clean up used state
     let _ = sqlx::query("DELETE FROM oauth_states WHERE state = ?")
@@ -86,12 +101,14 @@ pub async fn github_auth_callback(
             Ok(data) => data,
             Err(e) => {
                 error!(error = %e, "failed to parse GitHub token response");
-                return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "GitHub auth failed").into_response();
+                return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "GitHub auth failed")
+                    .into_response();
             }
         },
         Err(e) => {
             error!(error = %e, "failed to exchange GitHub code");
-            return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "GitHub auth failed").into_response();
+            return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "GitHub auth failed")
+                .into_response();
         }
     };
 
@@ -108,12 +125,14 @@ pub async fn github_auth_callback(
             Ok(user) => user,
             Err(e) => {
                 error!(error = %e, "failed to parse GitHub user");
-                return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "GitHub auth failed").into_response();
+                return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "GitHub auth failed")
+                    .into_response();
             }
         },
         Err(e) => {
             error!(error = %e, "failed to fetch GitHub user");
-            return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "GitHub auth failed").into_response();
+            return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "GitHub auth failed")
+                .into_response();
         }
     };
 
@@ -122,12 +141,12 @@ pub async fn github_auth_callback(
     // Find or create user
     let provider_id = github_user.id.to_string();
     let existing_user = sqlx::query_scalar::<_, String>(
-        "SELECT id FROM users WHERE provider = 'github' AND provider_id = ?"
+        "SELECT id FROM users WHERE provider = 'github' AND provider_id = ?",
     )
-        .bind(&provider_id)
-        .fetch_optional(&state.db.pool)
-        .await
-        .unwrap_or(None);
+    .bind(&provider_id)
+    .fetch_optional(&state.db.pool)
+    .await
+    .unwrap_or(None);
 
     let user_id = match existing_user {
         Some(id) => id,
@@ -135,15 +154,15 @@ pub async fn github_auth_callback(
             let new_id = Uuid::new_v4().to_string();
             let display_name = github_user.name.unwrap_or(github_user.login);
             let _ = sqlx::query(
-                "INSERT INTO users (id, provider, provider_id, email, display_name) VALUES (?, 'github', ?, ?, ?)"
+                "INSERT INTO users (id, provider, provider_id, email, display_name) VALUES (?, 'github', ?, ?, ?)",
             )
-                .bind(&new_id)
-                .bind(&provider_id)
-                .bind(&github_user.email)
-                .bind(&display_name)
-                .execute(&state.db.pool)
-                .await;
-            debug!(user_id = %new_id, "created new user");
+            .bind(&new_id)
+            .bind(&provider_id)
+            .bind(&github_user.email)
+            .bind(&display_name)
+            .execute(&state.db.pool)
+            .await;
+            info!(user_id = %new_id, "created new user");
             new_id
         }
     };
@@ -151,9 +170,17 @@ pub async fn github_auth_callback(
     // Generate JWT
     let token = jwt::create_token(&user_id, &state.config.jwt_secret).unwrap();
 
-    // Return the token as JSON (the CLI will capture this)
+    // If CLI callback is set, redirect the token to the local CLI server
+    if !cli_callback.is_empty() {
+        let redirect_url = format!("{}?token={}", cli_callback, token);
+        info!("redirecting token to CLI callback");
+        return Redirect::temporary(&redirect_url).into_response();
+    }
+
+    // Otherwise return JSON (for web/app clients)
     axum::Json(serde_json::json!({
         "token": token,
         "user_id": user_id,
-    })).into_response()
+    }))
+    .into_response()
 }
