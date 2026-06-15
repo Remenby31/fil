@@ -117,8 +117,40 @@ struct SettingsView: View {
     }
 
     private var accountSection: some View {
-        SettingsSection(title: "Account") {
+        let provider = TokenStorage.loadProvider()
+        let email = TokenStorage.loadEmail()
+
+        return SettingsSection(title: "Account") {
             VStack(spacing: 8) {
+                // Connected account info
+                VStack(spacing: 0) {
+                    HStack(spacing: 10) {
+                        Image(systemName: provider == "apple" ? "applelogo" : "network")
+                            .font(.system(size: 16))
+                            .foregroundStyle(FilTheme.filGreen)
+                            .frame(width: 32, height: 32)
+                            .background(FilTheme.filGreen.opacity(0.1))
+                            .clipShape(Circle())
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Signed in with \(provider == "apple" ? "Apple" : "GitHub")")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundStyle(FilTheme.cloud)
+
+                            if let email {
+                                Text(email)
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(FilTheme.cloud.opacity(0.4))
+                            }
+                        }
+
+                        Spacer()
+                    }
+                }
+                .padding(14)
+                .background(FilTheme.surface.opacity(0.6))
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+
                 Button {
                     showLogoutConfirm = true
                 } label: {

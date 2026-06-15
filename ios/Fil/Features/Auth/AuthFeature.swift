@@ -65,6 +65,7 @@ struct AuthFeature {
                 return .run { send in
                     do {
                         let token = try await GitHubAuthService.authenticate(startURL: authURL)
+                        TokenStorage.saveProvider("github")
                         await send(.hubAuthCompleted(.success(token)))
                     } catch {
                         await send(.hubAuthCompleted(.failure(error)))
@@ -112,6 +113,8 @@ struct AuthFeature {
 
                         struct AuthResponse: Decodable { let token: String }
                         let authResponse = try JSONDecoder().decode(AuthResponse.self, from: data)
+                        TokenStorage.saveProvider("apple")
+                        if let email { TokenStorage.saveEmail(email) }
                         await send(.hubAuthCompleted(.success(authResponse.token)))
                     } catch {
                         await send(.hubAuthCompleted(.failure(error)))

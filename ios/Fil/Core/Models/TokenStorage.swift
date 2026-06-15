@@ -5,6 +5,8 @@ enum TokenStorage {
     private static let service = "sh.fil.app"
     private static let tokenKey = "auth_token"
     private static let hubUrlKey = "hub_url"
+    private static let providerKey = "auth_provider"
+    private static let emailKey = "auth_email"
 
     static func saveToken(_ token: String) {
         save(key: tokenKey, value: token)
@@ -16,6 +18,24 @@ enum TokenStorage {
 
     static func clearToken() {
         delete(key: tokenKey)
+        delete(key: providerKey)
+        delete(key: emailKey)
+    }
+
+    static func saveProvider(_ provider: String) {
+        save(key: providerKey, value: provider)
+    }
+
+    static func loadProvider() -> String? {
+        load(key: providerKey)
+    }
+
+    static func saveEmail(_ email: String) {
+        save(key: emailKey, value: email)
+    }
+
+    static func loadEmail() -> String? {
+        load(key: emailKey)
     }
 
     static func saveHubUrl(_ url: String) {
