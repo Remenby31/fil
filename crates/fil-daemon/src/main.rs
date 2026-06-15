@@ -34,15 +34,15 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let cli = Cli::parse();
+
+    let default_level = if cli.command.is_some() { "fil=info" } else { "fil=off" };
     tracing_subscriber::fmt()
         .with_env_filter(
-            std::env::var("FIL_LOG")
-                .unwrap_or_else(|_| "fil=info".to_string()),
+            std::env::var("FIL_LOG").unwrap_or_else(|_| default_level.to_string()),
         )
         .with_writer(std::io::stderr)
         .init();
-
-    let cli = Cli::parse();
 
     match cli.command {
         Some(Commands::Setup { hub }) => setup::run_setup(hub).await,
