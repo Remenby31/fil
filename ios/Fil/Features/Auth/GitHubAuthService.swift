@@ -1,10 +1,19 @@
 import AuthenticationServices
 import Foundation
+import UIKit
 
-enum GitHubAuthService {
+final class GitHubAuthService: NSObject, ASWebAuthenticationPresentationContextProviding, @unchecked Sendable {
+    private var session: ASWebAuthenticationSession?
+    private static var activeInstance: GitHubAuthService?
+
     @MainActor
     static func authenticate(startURL: URL) async throws -> String {
-        try await withCheckedThrowingContinuation { continuation in
+        let service = GitHubAuthService()
+        activeInstance = service
+
+        defer { activeInstance = nil }
+
+        return try await withCheckedThrowingContinuation { continuation in
             let session = ASWebAuthenticationSession(
                 url: startURL,
                 callbackURLScheme: "fil"
@@ -24,9 +33,18 @@ enum GitHubAuthService {
                 continuation.resume(returning: token)
             }
 
+            service.session = session
+            session.presentationContextProvider = service
             session.prefersEphemeralWebBrowserSession = false
             session.start()
         }
+    }
+
+    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first(where: \.isKeyWindow) ?? ASPresentationAnchor()
     }
 
     enum AuthError: LocalizedError {
