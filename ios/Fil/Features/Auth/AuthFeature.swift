@@ -61,7 +61,8 @@ struct AuthFeature {
                 state.isLoading = true
                 state.errorMessage = nil
                 let hubURL = TokenStorage.loadHubUrl()
-                let authURL = URL(string: "\(hubURL)/auth/github/start")!
+                let callback = "fil://callback"
+                let authURL = URL(string: "\(hubURL)/auth/github/start?cli_callback=\(callback)")!
                 return .run { send in
                     do {
                         let token = try await GitHubAuthService.authenticate(startURL: authURL)
