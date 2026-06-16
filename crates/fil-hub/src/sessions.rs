@@ -26,6 +26,7 @@ pub enum SessionStatus {
 #[derive(Debug, Clone, Serialize)]
 pub struct DeviceState {
     pub device_id: String,
+    pub device_name: String,
     pub user_id: String,
     pub sessions: Vec<SessionInfo>,
     pub last_heartbeat: DateTime<Utc>,
@@ -44,12 +45,13 @@ impl SessionRegistry {
         }
     }
 
-    pub fn register_device(&self, device_id: &str, user_id: &str) {
+    pub fn register_device(&self, device_id: &str, user_id: &str, device_name: &str) {
         let mut devices = self.devices.write().unwrap();
         devices.insert(
             device_id.to_string(),
             DeviceState {
                 device_id: device_id.to_string(),
+                device_name: device_name.to_string(),
                 user_id: user_id.to_string(),
                 sessions: Vec::new(),
                 last_heartbeat: Utc::now(),

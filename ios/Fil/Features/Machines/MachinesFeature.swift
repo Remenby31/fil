@@ -129,7 +129,7 @@ extension HubClientDependency: DependencyKey {
                 }
                 let machine = Machine(
                     id: deviceState.deviceId,
-                    name: deviceState.deviceId,
+                    name: deviceState.deviceName ?? deviceState.deviceId,
                     status: deviceState.connected ? .online : .offline,
                     sessions: sessions
                 )

@@ -97,6 +97,7 @@ struct DeviceResponse: Codable, Equatable, Identifiable {
 
 struct DeviceState: Codable, Equatable {
     let deviceId: String
+    let deviceName: String?
     let userId: String
     let sessions: [SessionDTO]
     let lastHeartbeat: String
@@ -104,6 +105,7 @@ struct DeviceState: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case deviceId = "device_id"
+        case deviceName = "device_name"
         case userId = "user_id"
         case sessions
         case lastHeartbeat = "last_heartbeat"

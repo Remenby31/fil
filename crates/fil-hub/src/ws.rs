@@ -22,17 +22,17 @@ pub async fn ws_handler(
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     // Validate the device exists
-    let device = sqlx::query_as::<_, (String, String)>(
-        "SELECT d.id, d.user_id FROM devices d WHERE d.id = ?",
+    let device = sqlx::query_as::<_, (String, String, String)>(
+        "SELECT d.id, d.user_id, d.name FROM devices d WHERE d.id = ?",
     )
     .bind(&params.device_id)
     .fetch_optional(&state.db.pool)
     .await;
 
     match device {
-        Ok(Some((device_id, user_id))) => {
+        Ok(Some((device_id, user_id, device_name))) => {
             info!(device_id = %device_id, user_id = %user_id, "WebSocket connection accepted");
-            ws.on_upgrade(move |socket| handle_socket(socket, device_id, user_id, state))
+            ws.on_upgrade(move |socket| handle_socket(socket, device_id, user_id, device_name, state))
         }
         _ => {
             warn!(device_id = %params.device_id, "WebSocket connection rejected: unknown device");
@@ -41,11 +41,11 @@ pub async fn ws_handler(
     }
 }
 
-async fn handle_socket(socket: WebSocket, device_id: String, user_id: String, state: AppState) {
+async fn handle_socket(socket: WebSocket, device_id: String, user_id: String, device_name: String, state: AppState) {
     let (mut sender, mut receiver) = socket.split();
 
     // Register device as connected
-    state.sessions.register_device(&device_id, &user_id);
+    state.sessions.register_device(&device_id, &user_id, &device_name);
     info!(device_id = %device_id, "device connected");
 
     // Update last_seen
