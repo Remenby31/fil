@@ -84,7 +84,15 @@ pub fn spawn_pty(shell: &str) -> Result<PtyProcess> {
 /// Synchronous poll-based proxy loop.
 /// This is the gold standard approach used by script(1) and tmux.
 /// No async, no non-blocking flags on stdin/stdout.
-pub fn proxy_loop_sync(pty: &PtyProcess) -> Result<i32> {
+///
+/// Optional channels for hub streaming:
+/// - `output_tx`: PTY output bytes are tee'd here (for QUIC forwarding)
+/// - `input_rx`: Client input bytes are written to the PTY master
+pub fn proxy_loop_sync(
+    pty: &PtyProcess,
+    output_tx: Option<std::sync::mpsc::Sender<Vec<u8>>>,
+    input_rx: Option<std::sync::mpsc::Receiver<Vec<u8>>>,
+) -> Result<i32> {
     let master_fd = pty.master_fd;
 
     // Set beam cursor on the parent terminal (stdout, not master)
@@ -107,16 +115,47 @@ pub fn proxy_loop_sync(pty: &PtyProcess) -> Result<i32> {
         ).ok();
     }
 
+    // For client input, use a pipe so we can poll it
+    let (client_pipe_read, client_pipe_write) = if input_rx.is_some() {
+        let (r, w) = nix::unistd::pipe().context("failed to create client input pipe")?;
+        (Some(r), Some(w))
+    } else {
+        (None, None)
+    };
+
+    // Spawn thread to bridge mpsc → pipe (so poll can see it)
+    if let (Some(rx), Some(pipe_w)) = (input_rx, &client_pipe_write) {
+        let write_fd = pipe_w.as_raw_fd();
+        std::thread::spawn(move || {
+            while let Ok(data) = rx.recv() {
+                let mut written = 0;
+                while written < data.len() {
+                    let n = unsafe {
+                        libc::write(write_fd, data[written..].as_ptr() as *const _, data.len() - written)
+                    };
+                    if n <= 0 { break; }
+                    written += n as usize;
+                }
+            }
+        });
+    }
+
+    let n_fds = if client_pipe_read.is_some() { 4 } else { 3 };
     let mut pollfds = [
         libc::pollfd { fd: libc::STDIN_FILENO, events: libc::POLLIN, revents: 0 },
         libc::pollfd { fd: master_fd, events: libc::POLLIN, revents: 0 },
         libc::pollfd { fd: sigwinch_read.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+        libc::pollfd {
+            fd: client_pipe_read.as_ref().map(|p| p.as_raw_fd()).unwrap_or(-1),
+            events: libc::POLLIN,
+            revents: 0,
+        },
     ];
 
     let mut buf = [0u8; 16384];
 
     loop {
-        let ret = unsafe { libc::poll(pollfds.as_mut_ptr(), 3, -1) };
+        let ret = unsafe { libc::poll(pollfds.as_mut_ptr(), n_fds as u32, -1) };
 
         if ret < 0 {
             let err = std::io::Error::last_os_error();
@@ -145,13 +184,25 @@ pub fn proxy_loop_sync(pty: &PtyProcess) -> Result<i32> {
             write_all(master_fd, &buf[..n as usize]);
         }
 
-        // master → stdout (shell output)
+        // master → stdout (shell output) + tee to hub
         if pollfds[1].revents & libc::POLLIN != 0 {
             let n = unsafe { libc::read(master_fd, buf.as_mut_ptr() as *mut _, buf.len()) };
             if n <= 0 {
                 break;
             }
-            write_all(libc::STDOUT_FILENO, &buf[..n as usize]);
+            let data = &buf[..n as usize];
+            write_all(libc::STDOUT_FILENO, data);
+            if let Some(ref tx) = output_tx {
+                tx.send(data.to_vec()).ok();
+            }
+        }
+
+        // client input pipe → master (remote keyboard input)
+        if n_fds == 4 && pollfds[3].revents & libc::POLLIN != 0 {
+            let n = unsafe { libc::read(pollfds[3].fd, buf.as_mut_ptr() as *mut _, buf.len()) };
+            if n > 0 {
+                write_all(master_fd, &buf[..n as usize]);
+            }
         }
 
         // Check for hangup on master (child exited)

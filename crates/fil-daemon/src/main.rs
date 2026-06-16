@@ -1,6 +1,7 @@
 mod config;
 mod hub;
 mod pty;
+mod quic_client;
 mod setup;
 mod terminal;
 
@@ -61,15 +62,17 @@ fn run_proxy() -> Result<()> {
 
     let pty_process = pty::spawn_pty(&shell)?;
 
-    // Start hub connection in a background thread (if configured)
-    if config.is_configured() {
-        let hub_config = config.clone();
-        let session_id = Uuid::new_v4().to_string();
-        let shell_name = shell.clone();
-        let cwd = std::env::current_dir()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default();
+    let session_id = Uuid::new_v4().to_string();
 
+    // Channels for QUIC byte streaming
+    let (output_tx, input_rx) = if config.is_configured() {
+        let (otx, orx) = std::sync::mpsc::channel::<Vec<u8>>();
+        let (itx, irx) = std::sync::mpsc::channel::<Vec<u8>>();
+
+        let hub_config = config.clone();
+        let sid = session_id.clone();
+
+        // Background thread: QUIC data stream + WebSocket control
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -77,51 +80,86 @@ fn run_proxy() -> Result<()> {
                 .unwrap();
 
             rt.block_on(async move {
-                let (hub_conn, outgoing_rx) =
+                // WebSocket for control plane (session lifecycle, heartbeat)
+                let shell_name = std::env::var("SHELL").unwrap_or_default();
+                let cwd = std::env::current_dir()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default();
+
+                let (hub_conn, ws_outgoing_rx) =
                     hub::HubConnection::new(&hub_config.hub_url, &hub_config.device_id);
+                let ws_tx = hub_conn.sender();
 
-                let tx = hub_conn.sender();
+                let created_msg = hub::build_session_created(&sid, &shell_name, &cwd, 80, 24);
+                ws_tx.send(created_msg).await.ok();
 
-                let created_msg = hub::build_session_created(
-                    &session_id, &shell_name, &cwd, 80, 24,
-                );
-                tx.send(created_msg).await.ok();
-
-                let hb_tx = tx.clone();
-                let hb_device_id = hub_config.device_id.clone();
-                let hb_sid = session_id.clone();
+                // Heartbeat
+                let hb_tx = ws_tx.clone();
+                let hb_did = hub_config.device_id.clone();
+                let hb_sid = sid.clone();
                 let hb_shell = shell_name.clone();
                 let hb_cwd = cwd.clone();
                 tokio::spawn(async move {
                     let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
                     loop {
                         interval.tick().await;
-                        let session_info = fil_protocol::proto::SessionInfo {
-                            session_id: hb_sid.clone(),
-                            shell: hb_shell.clone(),
-                            cwd: hb_cwd.clone(),
-                            created_at: 0,
-                            cols: 80,
-                            rows: 24,
+                        let si = fil_protocol::proto::SessionInfo {
+                            session_id: hb_sid.clone(), shell: hb_shell.clone(),
+                            cwd: hb_cwd.clone(), created_at: 0, cols: 80, rows: 24,
                         };
-                        let hb = hub::build_heartbeat(&hb_device_id, vec![session_info]);
-                        if hb_tx.send(hb).await.is_err() {
+                        if hb_tx.send(hub::build_heartbeat(&hb_did, vec![si])).await.is_err() {
                             break;
                         }
                     }
                 });
 
-                let (incoming_tx, _incoming_rx) = mpsc::channel(256);
-                if let Err(_e) = hub_conn.connect_and_run(outgoing_rx, incoming_tx).await {
-                    // Silent — logs are off in proxy mode
+                let (ws_incoming_tx, _) = tokio::sync::mpsc::channel(256);
+                tokio::spawn(async move {
+                    hub_conn.connect_and_run(ws_outgoing_rx, ws_incoming_tx).await.ok();
+                });
+
+                // QUIC data plane: stream PTY bytes
+                let quic_port = 4433; // TODO: make configurable
+                let quic_client = quic_client::QuicDataClient::new(
+                    &hub_config.hub_url, quic_port,
+                );
+
+                // Bridge std::sync channels to tokio channels
+                let (quic_otx, quic_orx) = tokio::sync::mpsc::channel::<Vec<u8>>(512);
+                let quic_itx_sync = itx;
+
+                // Sync → Async bridge for output
+                std::thread::spawn(move || {
+                    while let Ok(data) = orx.recv() {
+                        if quic_otx.blocking_send(data).is_err() { break; }
+                    }
+                });
+
+                let (quic_input_tx, mut quic_input_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
+
+                // Async → Sync bridge for input
+                tokio::spawn(async move {
+                    while let Some(data) = quic_input_rx.recv().await {
+                        if quic_itx_sync.send(data).is_err() { break; }
+                    }
+                });
+
+                if let Err(_) = quic_client.connect_and_stream(
+                    sid, quic_orx, quic_input_tx,
+                ).await {
+                    // QUIC failed — still works offline
                 }
             });
         });
-    }
 
-    // Raw mode + synchronous poll loop (the gold standard)
+        (Some(otx), Some(irx))
+    } else {
+        (None, None)
+    };
+
+    // Raw mode + synchronous poll loop
     let _raw_guard = terminal::RawModeGuard::new()?;
-    let exit_code = pty::proxy_loop_sync(&pty_process)?;
+    let exit_code = pty::proxy_loop_sync(&pty_process, output_tx, input_rx)?;
 
     std::process::exit(exit_code);
 }

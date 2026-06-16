@@ -34,3 +34,5 @@ reqwest = { version = "0.12", features = ["json"] }
 open = "5"
 gethostname = "1"
 urlencoding = "2"
+quinn = { workspace = true }
+rustls = { workspace = true }

@@ -11,6 +11,8 @@ pub struct Config {
     pub apple_team_id: String,
     pub apple_key_id: String,
     pub public_url: String,
+    pub quic_port: u16,
+    pub data_dir: String,
 }
 
 impl Config {
@@ -36,6 +38,12 @@ impl Config {
             apple_key_id: std::env::var("APPLE_KEY_ID").unwrap_or_default(),
             public_url: std::env::var("PUBLIC_URL")
                 .unwrap_or_else(|_| format!("http://localhost:{port}")),
+            quic_port: std::env::var("QUIC_PORT")
+                .ok()
+                .and_then(|p| p.parse().ok())
+                .unwrap_or(4433),
+            data_dir: std::env::var("DATA_DIR")
+                .unwrap_or_else(|_| ".".to_string()),
         }
     }
 }

@@ -28,3 +28,7 @@ reqwest = { version = "0.12", features = ["json"] }
 futures-util = "0.3"
 prost = { workspace = true }
 base64 = "0.22"
+quinn = { workspace = true }
+rustls = { workspace = true }
+rcgen = { workspace = true }
+ring = "0.17"

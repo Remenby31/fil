@@ -1,6 +1,8 @@
 mod auth;
 mod config;
 mod db;
+mod quic;
+mod quic_certs;
 mod routes;
 mod sessions;
 mod state;
@@ -11,7 +13,8 @@ use axum::Router;
 use tokio::signal;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
-use tracing::info;
+use std::net::SocketAddr;
+use tracing::{error, info};
 
 use crate::config::Config;
 use crate::state::AppState;
@@ -27,10 +30,13 @@ async fn main() -> anyhow::Result<()> {
 
     let config = Config::from_env();
     let addr = config.addr;
+    let quic_port = config.quic_port;
+    let data_dir = config.data_dir.clone();
 
     info!("fil-hub v{} — starting on {}", env!("CARGO_PKG_VERSION"), addr);
 
     let state = AppState::new(config).await?;
+    let quic_sessions = state.sessions.clone();
 
     let app = Router::new()
         // Public routes
@@ -51,7 +57,23 @@ async fn main() -> anyhow::Result<()> {
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    info!("listening on {}", addr);
+    info!("HTTP listening on {}", addr);
+
+    // Start QUIC server for data plane
+    let quic_addr = SocketAddr::from(([0, 0, 0, 0], quic_port));
+    tokio::spawn(async move {
+        match quic_certs::QuicCerts::load_or_generate(&data_dir) {
+            Ok(certs) => {
+                info!(fingerprint = %certs.fingerprint(), "QUIC cert fingerprint");
+                if let Err(e) = quic::start_quic_server(quic_addr, certs, quic_sessions).await {
+                    error!(error = %e, "QUIC server failed");
+                }
+            }
+            Err(e) => {
+                error!(error = %e, "failed to generate QUIC certificates");
+            }
+        }
+    });
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
