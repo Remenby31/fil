@@ -5,13 +5,10 @@ use nix::sys::signal::{self, Signal};
 use nix::sys::wait::{self, WaitPidFlag, WaitStatus};
 use nix::unistd::{self, ForkResult, Pid};
 use std::ffi::CString;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-use tokio::io::unix::AsyncFd;
-use tokio::signal::unix::{signal as tokio_signal, SignalKind};
-use tracing::debug;
+use std::os::fd::AsRawFd;
 
 pub struct PtyProcess {
-    pub master_fd: OwnedFd,
+    pub master_fd: i32,
     pub child_pid: i32,
 }
 
@@ -21,18 +18,12 @@ pub fn detect_shell() -> String {
 
 fn get_window_size() -> libc::winsize {
     let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
-    let ret = unsafe { libc::ioctl(libc::STDIN_FILENO, u64::from(libc::TIOCGWINSZ), &mut ws) };
-    if ret != 0 || ws.ws_col == 0 {
+    unsafe { libc::ioctl(libc::STDIN_FILENO, u64::from(libc::TIOCGWINSZ), &mut ws) };
+    if ws.ws_col == 0 {
         ws.ws_col = 80;
         ws.ws_row = 24;
     }
     ws
-}
-
-fn set_window_size(fd: i32, ws: &libc::winsize) {
-    unsafe {
-        libc::ioctl(fd, u64::from(libc::TIOCSWINSZ), ws);
-    }
 }
 
 pub fn spawn_pty(shell: &str) -> Result<PtyProcess> {
@@ -41,19 +32,19 @@ pub fn spawn_pty(shell: &str) -> Result<PtyProcess> {
     let OpenptyResult { master, slave } = openpty(None, None)
         .context("failed to open PTY pair")?;
 
-    set_window_size(slave.as_raw_fd(), &ws);
+    // Set window size on slave
+    unsafe { libc::ioctl(slave.as_raw_fd(), u64::from(libc::TIOCSWINSZ), &ws) };
 
     match unsafe { unistd::fork() }.context("failed to fork")? {
         ForkResult::Child => {
+            // Close master in child
             drop(master);
 
             unistd::setsid().ok();
 
-            unsafe {
-                libc::ioctl(slave.as_raw_fd(), u64::from(libc::TIOCSCTTY), 0);
-            }
-
             let slave_raw = slave.as_raw_fd();
+            unsafe { libc::ioctl(slave_raw, u64::from(libc::TIOCSCTTY), 0) };
+
             unistd::dup2(slave_raw, libc::STDIN_FILENO).ok();
             unistd::dup2(slave_raw, libc::STDOUT_FILENO).ok();
             unistd::dup2(slave_raw, libc::STDERR_FILENO).ok();
@@ -79,125 +70,112 @@ pub fn spawn_pty(shell: &str) -> Result<PtyProcess> {
         }
         ForkResult::Parent { child } => {
             drop(slave);
+            let master_raw = master.as_raw_fd();
+            std::mem::forget(master); // we manage the fd manually
 
             Ok(PtyProcess {
-                master_fd: master,
+                master_fd: master_raw,
                 child_pid: child.as_raw(),
             })
         }
     }
 }
 
-pub async fn proxy_loop(pty: PtyProcess) -> Result<i32> {
-    let master_raw_fd = pty.master_fd.as_raw_fd();
+/// Synchronous poll-based proxy loop.
+/// This is the gold standard approach used by script(1) and tmux.
+/// No async, no non-blocking flags on stdin/stdout.
+pub fn proxy_loop_sync(pty: &PtyProcess) -> Result<i32> {
+    let master_fd = pty.master_fd;
     let child_pid = Pid::from_raw(pty.child_pid);
 
-    // Set master fd to non-blocking for async I/O
-    let flags = unsafe { libc::fcntl(master_raw_fd, libc::F_GETFL) };
-    unsafe { libc::fcntl(master_raw_fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
+    // Install SIGWINCH handler via self-pipe trick
+    let (sigwinch_read, sigwinch_write) = nix::unistd::pipe()
+        .context("failed to create signal pipe")?;
 
-    // Set stdin to non-blocking
-    let stdin_flags = unsafe { libc::fcntl(libc::STDIN_FILENO, libc::F_GETFL) };
-    unsafe { libc::fcntl(libc::STDIN_FILENO, libc::F_SETFL, stdin_flags | libc::O_NONBLOCK) };
+    unsafe {
+        SIGWINCH_PIPE = sigwinch_write.as_raw_fd();
+        signal::sigaction(
+            Signal::SIGWINCH,
+            &signal::SigAction::new(
+                signal::SigHandler::Handler(sigwinch_handler),
+                signal::SaFlags::SA_RESTART,
+                signal::SigSet::empty(),
+            ),
+        ).ok();
+    }
 
-    let master_async = AsyncFd::new(pty.master_fd)?;
-    let stdin_async = AsyncFd::new(unsafe { OwnedFd::from_raw_fd(libc::STDIN_FILENO) })?;
+    let mut pollfds = [
+        libc::pollfd { fd: libc::STDIN_FILENO, events: libc::POLLIN, revents: 0 },
+        libc::pollfd { fd: master_fd, events: libc::POLLIN, revents: 0 },
+        libc::pollfd { fd: sigwinch_read.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+    ];
 
-    let mut sigwinch = tokio_signal(SignalKind::window_change())?;
-    let mut sigchld = tokio_signal(SignalKind::child())?;
-
-    let exit_code: i32;
+    let mut buf = [0u8; 16384];
 
     loop {
-        tokio::select! {
-            // stdin → PTY master (user input)
-            readable = stdin_async.readable() => {
-                let mut guard = readable?;
-                match guard.try_io(|fd| {
-                    let mut buf = [0u8; 8192];
-                    let raw = fd.as_raw_fd();
-                    let n = unsafe { libc::read(raw, buf.as_mut_ptr() as *mut _, buf.len()) };
-                    if n < 0 {
-                        Err(std::io::Error::last_os_error())
-                    } else if n == 0 {
-                        Ok(0usize)
-                    } else {
-                        let master_raw = master_async.as_raw_fd();
-                        let written = unsafe { libc::write(master_raw, buf.as_ptr() as *const _, n as usize) };
-                        if written < 0 {
-                            Err(std::io::Error::last_os_error())
-                        } else {
-                            Ok(n as usize)
-                        }
-                    }
-                }) {
-                    Ok(Ok(0)) => {
-                        debug!("stdin EOF");
-                        break;
-                    }
-                    Ok(Ok(_)) => {}
-                    Ok(Err(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                    Ok(Err(e)) => {
-                        debug!(error = %e, "stdin read error");
-                        break;
-                    }
-                    Err(_would_block) => {}
-                }
-            }
+        let ret = unsafe { libc::poll(pollfds.as_mut_ptr(), 3, -1) };
 
-            // PTY master → stdout (shell output)
-            readable = master_async.readable() => {
-                let mut guard = readable?;
-                match guard.try_io(|fd| {
-                    let mut buf = [0u8; 8192];
-                    let raw = fd.as_raw_fd();
-                    let n = unsafe { libc::read(raw, buf.as_mut_ptr() as *mut _, buf.len()) };
-                    if n < 0 {
-                        Err(std::io::Error::last_os_error())
-                    } else if n == 0 {
-                        Ok(0usize)
-                    } else {
-                        let written = unsafe { libc::write(libc::STDOUT_FILENO, buf.as_ptr() as *const _, n as usize) };
-                        if written < 0 {
-                            Err(std::io::Error::last_os_error())
-                        } else {
-                            Ok(n as usize)
-                        }
-                    }
-                }) {
-                    Ok(Ok(0)) => {
-                        debug!("PTY master EOF");
-                        break;
-                    }
-                    Ok(Ok(_)) => {}
-                    Ok(Err(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                    Ok(Err(e)) if e.raw_os_error() == Some(libc::EIO) => {
-                        // EIO means the slave side was closed (child exited)
-                        debug!("PTY master EIO — child exited");
-                        break;
-                    }
-                    Ok(Err(e)) => {
-                        debug!(error = %e, "PTY master read error");
-                        break;
-                    }
-                    Err(_would_block) => {}
-                }
+        if ret < 0 {
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() == Some(libc::EINTR) {
+                continue;
             }
+            break;
+        }
 
-            _ = sigwinch.recv() => {
-                let ws = get_window_size();
-                set_window_size(master_async.as_raw_fd(), &ws);
-                debug!(cols = ws.ws_col, rows = ws.ws_row, "propagated resize");
-            }
+        // SIGWINCH — propagate resize
+        if pollfds[2].revents & libc::POLLIN != 0 {
+            let mut discard = [0u8; 1];
+            unsafe { libc::read(sigwinch_read.as_raw_fd(), discard.as_mut_ptr() as *mut _, 1) };
+            let ws = get_window_size();
+            unsafe { libc::ioctl(master_fd, u64::from(libc::TIOCSWINSZ), &ws) };
+            // Send SIGWINCH to child process group
+            signal::kill(child_pid, Signal::SIGWINCH).ok();
+        }
 
-            _ = sigchld.recv() => {
-                debug!("received SIGCHLD");
+        // stdin → master (user input)
+        if pollfds[0].revents & libc::POLLIN != 0 {
+            let n = unsafe { libc::read(libc::STDIN_FILENO, buf.as_mut_ptr() as *mut _, buf.len()) };
+            if n <= 0 {
+                break;
             }
+            write_all(master_fd, &buf[..n as usize]);
+        }
+
+        // master → stdout (shell output)
+        if pollfds[1].revents & libc::POLLIN != 0 {
+            let n = unsafe { libc::read(master_fd, buf.as_mut_ptr() as *mut _, buf.len()) };
+            if n <= 0 {
+                break;
+            }
+            write_all(libc::STDOUT_FILENO, &buf[..n as usize]);
+        }
+
+        // Check for hangup on master (child exited)
+        if pollfds[1].revents & (libc::POLLHUP | libc::POLLERR) != 0 {
+            // Drain remaining output
+            loop {
+                let n = unsafe { libc::read(master_fd, buf.as_mut_ptr() as *mut _, buf.len()) };
+                if n <= 0 { break; }
+                write_all(libc::STDOUT_FILENO, &buf[..n as usize]);
+            }
+            break;
+        }
+
+        // Check for hangup on stdin
+        if pollfds[0].revents & (libc::POLLHUP | libc::POLLERR) != 0 {
+            break;
         }
     }
 
-    // Reap the child process
-    exit_code = match wait::waitpid(child_pid, Some(WaitPidFlag::WNOHANG)) {
+    // Clean up signal pipe
+    unsafe { SIGWINCH_PIPE = -1; }
+
+    // Close master fd
+    unsafe { libc::close(master_fd); }
+
+    // Reap child
+    let exit_code = match wait::waitpid(child_pid, Some(WaitPidFlag::WNOHANG)) {
         Ok(WaitStatus::Exited(_, code)) => code,
         Ok(WaitStatus::Signaled(_, sig, _)) => 128 + sig as i32,
         _ => {
@@ -210,9 +188,28 @@ pub async fn proxy_loop(pty: PtyProcess) -> Result<i32> {
         }
     };
 
-    // Don't close stdin — it's not ours
-    let stdin_fd = stdin_async.into_inner();
-    std::mem::forget(stdin_fd);
-
     Ok(exit_code)
+}
+
+fn write_all(fd: i32, data: &[u8]) {
+    let mut written = 0;
+    while written < data.len() {
+        let n = unsafe {
+            libc::write(fd, data[written..].as_ptr() as *const _, data.len() - written)
+        };
+        if n <= 0 { break; }
+        written += n as usize;
+    }
+}
+
+// Signal handler for SIGWINCH — writes to self-pipe
+static mut SIGWINCH_PIPE: i32 = -1;
+
+extern "C" fn sigwinch_handler(_sig: libc::c_int) {
+    unsafe {
+        if SIGWINCH_PIPE >= 0 {
+            let byte: u8 = 1;
+            libc::write(SIGWINCH_PIPE, &byte as *const u8 as *const _, 1);
+        }
+    }
 }
