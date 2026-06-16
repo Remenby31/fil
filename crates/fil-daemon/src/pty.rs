@@ -86,6 +86,9 @@ pub fn spawn_pty(shell: &str) -> Result<PtyProcess> {
 /// No async, no non-blocking flags on stdin/stdout.
 pub fn proxy_loop_sync(pty: &PtyProcess) -> Result<i32> {
     let master_fd = pty.master_fd;
+
+    // Set beam cursor on the parent terminal (stdout, not master)
+    write_all(libc::STDOUT_FILENO, b"\x1b[5 q");
     let child_pid = Pid::from_raw(pty.child_pid);
 
     // Install SIGWINCH handler via self-pipe trick
