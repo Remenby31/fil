@@ -47,9 +47,17 @@ impl QuicDataClient {
         let mut endpoint = Endpoint::client(SocketAddr::from(([0, 0, 0, 0], 0)))?;
         endpoint.set_default_client_config(client_config);
 
-        let addr: SocketAddr = format!("{}:{}", self.hub_host, self.hub_port)
-            .parse()
-            .context("invalid hub address")?;
+        // Resolve hostname to IP (SocketAddr::parse only accepts IPs)
+        let addr_str = format!("{}:{}", self.hub_host, self.hub_port);
+        let addr = tokio::net::lookup_host(&addr_str)
+            .await
+            .context("DNS resolution failed")?
+            .find(|a| a.is_ipv4()) // Prefer IPv4
+            .or_else(|| {
+                // Fallback: try parsing as IP directly
+                addr_str.parse().ok()
+            })
+            .context("could not resolve hub address")?;
 
         info!(addr = %addr, "connecting QUIC to hub");
 
