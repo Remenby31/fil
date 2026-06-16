@@ -23,6 +23,7 @@
 		840E239432FB2087402559F1 /* HubWebSocket.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEFFC4E235C1135FAA311A5D /* HubWebSocket.swift */; };
 		89D3FBA3068FDB899F26F624 /* GitHubAuthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04EE267190F3F78D3C3C58A8 /* GitHubAuthService.swift */; };
 		962FE739E505C946A094B104 /* TerminalFeature.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA4C99E7EDCA3E7F134CB270 /* TerminalFeature.swift */; };
+		A41F9E4883098DE9C75ED357 /* QUICClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A849340E9544F4167F8BDA4A /* QUICClient.swift */; };
 		A609899603D07CC5DF4B505A /* TerminalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66A28AAEFD7F576095710B13 /* TerminalView.swift */; };
 		A8764E0D8EFECF2E89FB9FAC /* TokenStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 886301ABA9EB06A422CAA659 /* TokenStorage.swift */; };
 		AA71A70EEC7EF30624407646 /* ComposableArchitecture in Frameworks */ = {isa = PBXBuildFile; productRef = D6BC0A8A46658449D16CFB76 /* ComposableArchitecture */; };
@@ -47,6 +48,7 @@
 		886301ABA9EB06A422CAA659 /* TokenStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenStorage.swift; sourceTree = "<group>"; };
 		910529E125DDE8743EAD1019 /* HubClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubClient.swift; sourceTree = "<group>"; };
 		99350430C019C884AEB57686 /* Fil.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Fil.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A849340E9544F4167F8BDA4A /* QUICClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QUICClient.swift; sourceTree = "<group>"; };
 		A8AB6AB119A61CB64AEF9DA5 /* MachinesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MachinesView.swift; sourceTree = "<group>"; };
 		AF5A668ED84C8282C712960F /* Machine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Machine.swift; sourceTree = "<group>"; };
 		B4AEC0FCF72E497E28644462 /* AppView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppView.swift; sourceTree = "<group>"; };
@@ -117,6 +119,7 @@
 				57AA6BB3644A2589E0AA351C /* ConnectionManager.swift */,
 				910529E125DDE8743EAD1019 /* HubClient.swift */,
 				DEFFC4E235C1135FAA311A5D /* HubWebSocket.swift */,
+				A849340E9544F4167F8BDA4A /* QUICClient.swift */,
 			);
 			path = Network;
 			sourceTree = "<group>";
@@ -301,6 +304,7 @@
 				3ED9F2613EE8C9A85397C1E3 /* MachinesFeature.swift in Sources */,
 				E897C1FEE5EE4ACBB9B15769 /* MachinesView.swift in Sources */,
 				6598D39D8A9E8890F4EF5738 /* OnboardingView.swift in Sources */,
+				A41F9E4883098DE9C75ED357 /* QUICClient.swift in Sources */,
 				56B84B52B3D4E9F2994C92BB /* SettingsView.swift in Sources */,
 				962FE739E505C946A094B104 /* TerminalFeature.swift in Sources */,
 				A609899603D07CC5DF4B505A /* TerminalView.swift in Sources */,
@@ -379,7 +383,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 9;
+				CURRENT_PROJECT_VERSION = 10;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = 3SNT64YKAS;
 				ENABLE_NS_ASSERTIONS = NO;
@@ -439,7 +443,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 9;
+				CURRENT_PROJECT_VERSION = 10;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = 3SNT64YKAS;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;

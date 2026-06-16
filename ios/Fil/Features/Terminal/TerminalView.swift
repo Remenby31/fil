@@ -90,8 +90,14 @@ struct TerminalSessionView: View {
     // MARK: - Terminal Area
 
     private var terminalArea: some View {
-        SwiftTermWrapper(fontSize: store.fontSize)
-            .ignoresSafeArea(.keyboard)
+        SwiftTermWrapper(
+            fontSize: store.fontSize,
+            dataReceived: store.terminalData,
+            onInput: { data in
+                store.send(.inputSent(data))
+            }
+        )
+        .ignoresSafeArea(.keyboard)
     }
 
     // MARK: - Disconnected Overlay
@@ -148,6 +154,8 @@ struct TerminalSessionView: View {
 
 struct SwiftTermWrapper: UIViewRepresentable {
     var fontSize: CGFloat
+    var dataReceived: [UInt8]
+    var onInput: ((Data) -> Void)?
 
     func makeUIView(context: Context) -> SwiftTerm.TerminalView {
         let tv = SwiftTerm.TerminalView(frame: .zero)
@@ -155,11 +163,44 @@ struct SwiftTermWrapper: UIViewRepresentable {
         tv.nativeForegroundColor = UIColor(FilTheme.cloud)
         tv.nativeBackgroundColor = UIColor(FilTheme.void_)
         tv.font = UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        context.coordinator.terminalView = tv
+        context.coordinator.onInput = onInput
+        tv.terminalDelegate = context.coordinator
         return tv
     }
 
     func updateUIView(_ uiView: SwiftTerm.TerminalView, context: Context) {
         uiView.font = UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        context.coordinator.onInput = onInput
+
+        // Feed received bytes into SwiftTerm
+        if !dataReceived.isEmpty {
+            uiView.feed(byteArray: ArraySlice(dataReceived))
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    class Coordinator: NSObject, SwiftTerm.TerminalViewDelegate {
+        weak var terminalView: SwiftTerm.TerminalView?
+        var onInput: ((Data) -> Void)?
+
+        func scrolled(source: SwiftTerm.TerminalView, position: Double) {}
+        func setTerminalTitle(source: SwiftTerm.TerminalView, title: String) {}
+        func sizeChanged(source: SwiftTerm.TerminalView, newCols: Int, newRows: Int) {}
+        func bell(source: SwiftTerm.TerminalView) {}
+        func clipboardCopy(source: SwiftTerm.TerminalView, content: Data) {}
+        func rangeChanged(source: SwiftTerm.TerminalView, startY: Int, endY: Int) {}
+        func iTermContent(source: SwiftTerm.TerminalView, content: Data) {}
+
+        func send(source: SwiftTerm.TerminalView, data: ArraySlice<UInt8>) {
+            onInput?(Data(data))
+        }
+
+        func hostCurrentDirectoryUpdate(source: SwiftTerm.TerminalView, directory: String?) {}
+        func requestOpenLink(source: SwiftTerm.TerminalView, link: String, params: [String : String]) {}
     }
 }
 

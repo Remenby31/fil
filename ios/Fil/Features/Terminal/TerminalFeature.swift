@@ -10,14 +10,15 @@ struct TerminalFeature {
         var fontSize: CGFloat = 14
         var latencyMs: Int?
         var showDisconnectedAlert = false
+        var terminalData: [UInt8] = []
     }
 
-    enum Action {
+    enum Action: Equatable {
         case onAppear
         case onDisappear
         case connected
         case disconnected
-        case dataReceived(Data)
+        case dataReceived([UInt8])
         case inputSent(Data)
         case dismiss
         case fontSizeChanged(CGFloat)
@@ -31,13 +32,34 @@ struct TerminalFeature {
         Reduce { state, action in
             switch action {
             case .onAppear:
+                let sessionId = state.session.id
+                let hubHost = TokenStorage.loadHubUrl()
+                    .replacingOccurrences(of: "https://", with: "")
+                    .replacingOccurrences(of: "http://", with: "")
+                    .components(separatedBy: ":").first ?? "localhost"
+
                 return .run { send in
-                    // TODO: connect to hub WebSocket for this session's byte stream
-                    await send(.connected)
+                    let client = QUICTerminalClient(hubHost: hubHost)
+
+                    client.onConnected = {
+                        Task { await send(.connected) }
+                    }
+                    client.onDisconnected = {
+                        Task { await send(.disconnected) }
+                    }
+                    client.onDataReceived = { data in
+                        Task { await send(.dataReceived([UInt8](data))) }
+                    }
+
+                    client.connect(sessionId: sessionId)
+
+                    // Keep the client alive until cancelled
+                    try? await Task.sleep(for: .seconds(86400))
+                    client.disconnect()
                 }
 
             case .onDisappear:
-                return .none
+                return .cancel(id: CancelID.quic)
 
             case .connected:
                 state.isConnected = true
@@ -49,11 +71,12 @@ struct TerminalFeature {
                 state.showDisconnectedAlert = true
                 return .none
 
-            case .dataReceived:
+            case .dataReceived(let bytes):
+                state.terminalData = bytes
                 return .none
 
-            case .inputSent:
-                // TODO: send bytes to hub → daemon → PTY
+            case .inputSent(let data):
+                // TODO: send via QUIC client
                 return .none
 
             case .dismiss:
@@ -72,9 +95,10 @@ struct TerminalFeature {
                 return .send(.onAppear)
 
             case .nextSession, .previousSession:
-                // TODO: implement session switching
                 return .none
             }
         }
     }
+
+    private enum CancelID { case quic }
 }
