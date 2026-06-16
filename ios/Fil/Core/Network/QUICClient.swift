@@ -10,7 +10,7 @@ final class QUICTerminalClient: @unchecked Sendable {
     var onConnected: (@Sendable () -> Void)?
     var onDisconnected: (@Sendable () -> Void)?
 
-    init(hubHost: String, hubPort: UInt16 = 4433) {
+    init(hubHost: String, hubPort: UInt16 = 16433) {
         self.hubHost = hubHost
         self.hubPort = hubPort
     }

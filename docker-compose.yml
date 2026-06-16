@@ -3,6 +3,7 @@ services:
     build: .
     ports:
       - "3100:3100"
+      - "16433:16433/udp"
     volumes:
       - fil-data:/data
     environment:
@@ -12,6 +13,8 @@ services:
       - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID:-}
       - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET:-}
       - PUBLIC_URL=${PUBLIC_URL:-http://localhost:3100}
+      - QUIC_PORT=${QUIC_PORT:-16433}
+      - DATA_DIR=/data
     restart: unless-stopped
 
 volumes:

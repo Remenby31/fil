@@ -11,17 +11,9 @@ pub struct QuicDataClient {
 }
 
 impl QuicDataClient {
-    pub fn new(hub_url: &str, quic_port: u16) -> Self {
-        let host = hub_url
-            .trim_start_matches("https://")
-            .trim_start_matches("http://")
-            .split(':')
-            .next()
-            .unwrap_or("localhost")
-            .to_string();
-
+    pub fn new(quic_host: &str, quic_port: u16) -> Self {
         Self {
-            hub_host: host,
+            hub_host: quic_host.to_string(),
             hub_port: quic_port,
         }
     }

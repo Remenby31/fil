@@ -41,7 +41,7 @@ impl Config {
             quic_port: std::env::var("QUIC_PORT")
                 .ok()
                 .and_then(|p| p.parse().ok())
-                .unwrap_or(4433),
+                .unwrap_or(16433),
             data_dir: std::env::var("DATA_DIR")
                 .unwrap_or_else(|_| ".".to_string()),
         }

@@ -119,9 +119,8 @@ fn run_proxy() -> Result<()> {
                 });
 
                 // QUIC data plane: stream PTY bytes
-                let quic_port = 4433; // TODO: make configurable
                 let quic_client = quic_client::QuicDataClient::new(
-                    &hub_config.hub_url, quic_port,
+                    &hub_config.effective_quic_host(), hub_config.quic_port,
                 );
 
                 // Bridge std::sync channels to tokio channels

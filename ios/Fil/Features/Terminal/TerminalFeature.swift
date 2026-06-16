@@ -33,10 +33,12 @@ struct TerminalFeature {
             switch action {
             case .onAppear:
                 let sessionId = state.session.id
-                let hubHost = TokenStorage.loadHubUrl()
+                // QUIC host: derive from hub URL (fil.remenby.fr → quic.fil.remenby.fr)
+                let httpHost = TokenStorage.loadHubUrl()
                     .replacingOccurrences(of: "https://", with: "")
                     .replacingOccurrences(of: "http://", with: "")
                     .components(separatedBy: ":").first ?? "localhost"
+                let hubHost = "quic.\(httpHost)"
 
                 return .run { send in
                     let client = QUICTerminalClient(hubHost: hubHost)
