@@ -5,6 +5,7 @@ use tracing::{debug, error, info};
 use uuid::Uuid;
 
 use crate::auth::jwt;
+use crate::auth::shared::find_or_create_user;
 use crate::state::AppState;
 
 #[derive(Deserialize)]
@@ -138,34 +139,14 @@ pub async fn github_auth_callback(
 
     debug!(github_id = github_user.id, login = %github_user.login, "GitHub user authenticated");
 
-    // Find or create user
+    // Find or create user (with cross-provider email linking)
     let provider_id = github_user.id.to_string();
-    let existing_user = sqlx::query_scalar::<_, String>(
-        "SELECT id FROM users WHERE provider = 'github' AND provider_id = ?",
-    )
-    .bind(&provider_id)
-    .fetch_optional(&state.db.pool)
-    .await
-    .unwrap_or(None);
+    let email = &github_user.email;
+    let display_name = github_user.name.unwrap_or(github_user.login);
 
-    let user_id = match existing_user {
-        Some(id) => id,
-        None => {
-            let new_id = Uuid::new_v4().to_string();
-            let display_name = github_user.name.unwrap_or(github_user.login);
-            let _ = sqlx::query(
-                "INSERT INTO users (id, provider, provider_id, email, display_name) VALUES (?, 'github', ?, ?, ?)",
-            )
-            .bind(&new_id)
-            .bind(&provider_id)
-            .bind(&github_user.email)
-            .bind(&display_name)
-            .execute(&state.db.pool)
-            .await;
-            info!(user_id = %new_id, "created new user");
-            new_id
-        }
-    };
+    let user_id = find_or_create_user(
+        &state.db.pool, "github", &provider_id, email.as_deref(), &display_name,
+    ).await;
 
     // Generate JWT
     let token = jwt::create_token(&user_id, &state.config.jwt_secret).unwrap();

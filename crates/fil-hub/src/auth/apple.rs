@@ -47,35 +47,10 @@ pub async fn apple_auth_callback(
 
     debug!(apple_user_id = %apple_user_id, "Apple user authenticated");
 
-    // Find or create user
-    let existing_user = sqlx::query_scalar::<_, String>(
-        "SELECT id FROM users WHERE provider = 'apple' AND provider_id = ?",
-    )
-    .bind(&apple_user_id)
-    .fetch_optional(&state.db.pool)
-    .await
-    .unwrap_or(None);
-
-    let user_id = match existing_user {
-        Some(id) => {
-            debug!(user_id = %id, "existing Apple user found");
-            id
-        }
-        None => {
-            let new_id = Uuid::new_v4().to_string();
-            let _ = sqlx::query(
-                "INSERT INTO users (id, provider, provider_id, email, display_name) VALUES (?, 'apple', ?, ?, ?)",
-            )
-            .bind(&new_id)
-            .bind(&apple_user_id)
-            .bind(&email)
-            .bind(&display_name)
-            .execute(&state.db.pool)
-            .await;
-            info!(user_id = %new_id, "created new Apple user");
-            new_id
-        }
-    };
+    // Find or create user (with cross-provider email linking)
+    let user_id = crate::auth::shared::find_or_create_user(
+        &state.db.pool, "apple", &apple_user_id, email.as_deref(), &display_name,
+    ).await;
 
     // Generate JWT
     let token = match jwt::create_token(&user_id, &state.config.jwt_secret) {

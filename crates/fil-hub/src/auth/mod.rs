@@ -1,6 +1,7 @@
 mod jwt;
 mod github;
 mod apple;
+pub mod shared;
 
 pub use jwt::verify_token;
 pub use github::{github_auth_start, github_auth_callback};

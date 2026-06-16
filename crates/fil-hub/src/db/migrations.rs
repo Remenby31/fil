@@ -49,6 +49,21 @@ pub async fn run(pool: &SqlitePool) -> Result<()> {
     .await?;
     debug!("table 'oauth_states' ready");
 
+    // Link table: multiple auth providers → same user
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS user_links (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id),
+            provider TEXT NOT NULL,
+            provider_id TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(provider, provider_id)
+        )",
+    )
+    .execute(pool)
+    .await?;
+    debug!("table 'user_links' ready");
+
     // Indexes
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_devices_user_id ON devices(user_id)")
         .execute(pool)

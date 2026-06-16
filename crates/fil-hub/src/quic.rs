@@ -14,12 +14,38 @@ struct AttachedClient {
     sender: mpsc::Sender<Vec<u8>>,
 }
 
+/// Circular buffer for scrollback catch-up
+struct ScrollbackBuffer {
+    buf: Vec<u8>,
+    max_size: usize,
+}
+
+impl ScrollbackBuffer {
+    fn new(max_size: usize) -> Self {
+        Self { buf: Vec::with_capacity(max_size), max_size }
+    }
+
+    fn push(&mut self, data: &[u8]) {
+        self.buf.extend_from_slice(data);
+        if self.buf.len() > self.max_size {
+            let excess = self.buf.len() - self.max_size;
+            self.buf.drain(..excess);
+        }
+    }
+
+    fn snapshot(&self) -> Vec<u8> {
+        self.buf.clone()
+    }
+}
+
 /// Routes bytes between daemons and attached clients
 pub struct QuicRouter {
     /// session_id → list of attached clients
     clients: Arc<RwLock<HashMap<String, Vec<AttachedClient>>>>,
     /// device_id → sender to daemon's data stream
     daemon_inputs: Arc<RwLock<HashMap<String, mpsc::Sender<Vec<u8>>>>>,
+    /// session_id → scrollback buffer (last 64KB of output)
+    scrollback: Arc<RwLock<HashMap<String, ScrollbackBuffer>>>,
 }
 
 impl QuicRouter {
@@ -27,10 +53,20 @@ impl QuicRouter {
         Self {
             clients: Arc::new(RwLock::new(HashMap::new())),
             daemon_inputs: Arc::new(RwLock::new(HashMap::new())),
+            scrollback: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
     pub async fn forward_to_clients(&self, session_id: &str, data: &[u8]) {
+        // Store in scrollback buffer
+        {
+            let mut scrollback = self.scrollback.write().await;
+            scrollback
+                .entry(session_id.to_string())
+                .or_insert_with(|| ScrollbackBuffer::new(65536))
+                .push(data);
+        }
+
         let clients = self.clients.read().await;
         if let Some(senders) = clients.get(session_id) {
             for client in senders {
@@ -42,15 +78,23 @@ impl QuicRouter {
     pub async fn attach_client(
         &self,
         session_id: &str,
-    ) -> mpsc::Receiver<Vec<u8>> {
+    ) -> (mpsc::Receiver<Vec<u8>>, Vec<u8>) {
         let (tx, rx) = mpsc::channel(512);
         let mut clients = self.clients.write().await;
         clients
             .entry(session_id.to_string())
             .or_default()
             .push(AttachedClient { sender: tx });
-        info!(session_id = %session_id, "client attached to session");
-        rx
+
+        // Get scrollback snapshot for catch-up
+        let scrollback = self.scrollback.read().await;
+        let catchup = scrollback
+            .get(session_id)
+            .map(|sb| sb.snapshot())
+            .unwrap_or_default();
+
+        info!(session_id = %session_id, catchup_bytes = catchup.len(), "client attached to session");
+        (rx, catchup)
     }
 
     pub async fn detach_clients(&self, session_id: &str) {
@@ -218,6 +262,7 @@ async fn handle_stream(
         }
 
         // 0x02 = Client attach (iOS app watching a session)
+        // After session_id: optional 4 bytes for terminal size (cols u16 + rows u16)
         0x02 => {
             // Read session_id
             let mut len_buf = [0u8; 2];
@@ -229,8 +274,15 @@ async fn handle_stream(
 
             debug!(session_id = %session_id, "client attached to session");
 
-            // Subscribe to session output
-            let mut output_rx = router.attach_client(&session_id).await;
+            // Subscribe to session output + get scrollback catch-up
+            let (mut output_rx, catchup) = router.attach_client(&session_id).await;
+
+            // Send scrollback catch-up first
+            if !catchup.is_empty() {
+                if send.write_all(&catchup).await.is_err() {
+                    return Ok(());
+                }
+            }
 
             // Forward output to client
             let send_task = async move {
