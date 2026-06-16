@@ -1,6 +1,6 @@
 ---
 const title = "Fil — Your terminals, everywhere.";
-const description = "Access your Mac terminal sessions from your iPhone. One thread connecting all your devices.";
+const description = "Access your Mac terminal sessions from your iPhone. QUIC transport, E2E encrypted, built in Rust.";
 ---
 
 <html lang="en">
@@ -22,129 +22,188 @@ const description = "Access your Mac terminal sessions from your iPhone. One thr
 </head>
 
 <body>
-  <div class="container">
-    <nav>
-      <a href="/" class="logo">fil<span>.</span></a>
+  <!-- Nav -->
+  <nav>
+    <div class="nav-inner">
+      <a href="/" class="logo">fil<span>.sh</span></a>
       <div class="nav-links">
         <a href="#features" class="nav-link">Features</a>
-        <a href="#how" class="nav-link">How it works</a>
-        <a href="https://github.com/Remenby31/fil" class="nav-link">GitHub</a>
-      </div>
-    </nav>
-
-    <section class="hero">
-      <h1>Your terminals,<br><em>everywhere</em>.</h1>
-      <p>Open a terminal on your Mac. Pick it up on your iPhone. Fil is the invisible thread that connects your sessions across devices.</p>
-
-      <div class="install-cmd" onclick="navigator.clipboard.writeText('curl -fsSL https://fil.sh/install.sh | sh')">
-        <span class="install-prompt">$</span>
-        <span class="install-text">curl -fsSL https://fil.sh/install.sh | sh</span>
-        <span class="install-copy" title="Copy">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-        </span>
-      </div>
-
-      <div class="hero-cta">
-        <a href="https://github.com/Remenby31/fil" class="github-link" title="View on GitHub">
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+        <a href="#stack" class="nav-link">Stack</a>
+        <a href="https://github.com/Remenby31/fil" class="nav-link">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
         </a>
       </div>
+    </div>
+  </nav>
 
-      <div class="cli-preview">
-        <div class="cli-bar">
-          <div class="cli-dot"></div>
-          <div class="cli-dot"></div>
-          <div class="cli-dot"></div>
-        </div>
-        <div class="cli-body">
-          <div><span class="dim">$</span> <span class="cmd">curl -fsSL https://fil.sh/install.sh | sh</span></div>
-          <div><span class="dim">$</span> <span class="cmd">fil setup</span></div>
-          <br/>
-          <div><span class="ok">  ✓</span> <span class="dim">Signed in as</span> <span class="cmd">Baptiste</span></div>
-          <div><span class="ok">  ✓</span> <span class="dim">Device</span> <span class="cmd">Mac-mini</span> <span class="dim">registered</span></div>
-          <div><span class="ok">  ✓</span> <span class="dim">Connected to hub</span></div>
-          <br/>
-          <div><span class="dim">  Ready. Open the Fil app on your iPhone.</span></div>
-        </div>
+  <!-- Hero -->
+  <section class="hero">
+    <div class="hero-badge reveal">QUIC transport · E2E encrypted · Open source</div>
+    <h1 class="reveal">Your terminals,<br><em>everywhere</em>.</h1>
+    <p class="reveal delay-1">Open a terminal on your Mac. Pick it up on your iPhone.<br>One invisible thread connecting your sessions across devices.</p>
+
+    <div class="install-cmd reveal delay-2" onclick="navigator.clipboard.writeText('curl -fsSL https://fil.sh/install.sh | sh'); this.classList.add('copied')">
+      <span class="install-prompt">$</span>
+      <span class="install-text">curl -fsSL https://fil.sh/install.sh | sh</span>
+      <span class="install-copy">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+      </span>
+    </div>
+
+    <div class="cli-preview reveal delay-3">
+      <div class="cli-bar">
+        <div class="cli-dot red"></div>
+        <div class="cli-dot yellow"></div>
+        <div class="cli-dot green"></div>
+        <span class="cli-title">Terminal</span>
       </div>
-    </section>
-
-    <section class="features" id="features">
-      <h2>Everything you need.</h2>
-      <div class="feature-grid">
-        <div class="feature-card">
-          <span class="feature-icon"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--fil-green)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg></span>
-          <h3>Real-time session access</h3>
-          <p>See all your terminal sessions from your iPhone. Tap to connect. Type commands. Full terminal, native iOS experience.</p>
-        </div>
-        <div class="feature-card">
-          <span class="feature-icon"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--fil-green)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg></span>
-          <h3>Multi-machine</h3>
-          <p>Connect all your Macs. One hub aggregates sessions from every device. Switch between machines in a tap.</p>
-        </div>
-        <div class="feature-card">
-          <span class="feature-icon"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--fil-green)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg></span>
-          <h3>Smart notifications</h3>
-          <p>Know when your build finishes, your agent needs approval, or a command fails. No noise, only what matters.</p>
-        </div>
-        <div class="feature-card">
-          <span class="feature-icon"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--fil-green)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg></span>
-          <h3>Dynamic Island</h3>
-          <p>Long-running processes live on your Dynamic Island. See the command, elapsed time, and tap to jump in.</p>
-        </div>
-        <div class="feature-card">
-          <span class="feature-icon"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--fil-green)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></span>
-          <h3>End-to-end encrypted</h3>
-          <p>Noise Protocol, ChaCha20-Poly1305. The hub routes encrypted bytes without ever seeing your data.</p>
-        </div>
-        <div class="feature-card">
-          <span class="feature-icon"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--fil-green)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 8.35V20a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8.35A2 2 0 0 1 3.26 6.5l8-3.2a2 2 0 0 1 1.48 0l8 3.2A2 2 0 0 1 22 8.35Z"/><path d="M6 18h12"/><path d="M6 14h12"/><rect x="6" y="10" width="12" height="0"/></svg></span>
-          <h3>Self-hostable</h3>
-          <p>Run your own hub with a single Docker command. Your data, your infrastructure. Or use our hosted version.</p>
-        </div>
+      <div class="cli-body">
+        <div class="type-line" style="--delay: 0s"><span class="dim">$</span> <span class="cmd">curl -fsSL https://fil.sh/install.sh | sh</span></div>
+        <div class="type-line" style="--delay: 0.8s"><span class="dim">$</span> <span class="cmd">fil setup</span></div>
+        <div class="type-line" style="--delay: 1.6s">&nbsp;</div>
+        <div class="type-line" style="--delay: 2.0s"><span class="ok">  ✓</span> <span class="dim">Signed in as</span> <span class="cmd">Baptiste</span></div>
+        <div class="type-line" style="--delay: 2.4s"><span class="ok">  ✓</span> <span class="dim">Device</span> <span class="cmd">MacBook-Pro</span> <span class="dim">registered</span></div>
+        <div class="type-line" style="--delay: 2.8s"><span class="ok">  ✓</span> <span class="dim">Connected via QUIC</span></div>
+        <div class="type-line" style="--delay: 3.4s">&nbsp;</div>
+        <div class="type-line" style="--delay: 3.8s"><span class="dim">  Ready. Open Fil on your iPhone.</span></div>
       </div>
-    </section>
+    </div>
+  </section>
 
-    <section class="how" id="how">
-      <h2>Three steps. Two minutes.</h2>
-      <div class="steps">
-        <div class="step">
-          <div class="step-number">1</div>
-          <h3>Install on your Mac</h3>
-          <p>One command. Fil detects your terminal and configures everything.</p>
-          <code>brew install fil</code>
+  <!-- Features -->
+  <section class="features" id="features">
+    <h2 class="section-title reveal">Built for developers<br>who <em>ship</em>.</h2>
+
+    <div class="feature-grid">
+      <div class="feature-card reveal">
+        <div class="feature-icon-wrap">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
         </div>
-        <div class="step">
-          <div class="step-number">2</div>
-          <h3>Sign in</h3>
-          <p>Sign in with Apple or GitHub. Your devices are linked instantly.</p>
-          <code>fil setup</code>
-        </div>
-        <div class="step">
-          <div class="step-number">3</div>
-          <h3>Open on your iPhone</h3>
-          <p>Your sessions are already there. Tap one and you're in.</p>
-          <code>That's it.</code>
-        </div>
+        <h3>Real-time access</h3>
+        <p>See every terminal session from your iPhone. Tap to connect, type commands, full native experience.</p>
       </div>
-    </section>
+      <div class="feature-card reveal">
+        <div class="feature-icon-wrap">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        </div>
+        <h3>Multi-machine</h3>
+        <p>All your Macs, one hub. Switch between machines in a tap. Sessions aggregated across devices.</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon-wrap">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+        </div>
+        <h3>Smart notifications</h3>
+        <p>Build finished. Agent needs approval. Command failed. Only what matters, zero noise.</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon-wrap">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+        </div>
+        <h3>Dynamic Island</h3>
+        <p>Running processes live on your lock screen. Command name, elapsed time. Tap to jump in.</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon-wrap">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        </div>
+        <h3>End-to-end encrypted</h3>
+        <p>Noise Protocol, ChaCha20-Poly1305. The hub routes bytes without ever reading them.</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon-wrap">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        </div>
+        <h3>Self-hostable</h3>
+        <p>One Docker command. Your data, your infra. Or use our hosted version — zero config.</p>
+      </div>
+    </div>
+  </section>
 
-    <section class="selfhost">
-      <h2>Own your data.</h2>
-      <p>Run the Fil hub on your own server. One Docker command, zero dependencies.</p>
-      <code>docker run -d -p 3100:3100 fil/hub</code>
-    </section>
+  <!-- Built with -->
+  <section class="stack" id="stack">
+    <h2 class="section-title reveal">Built with the<br><em>best</em> tools.</h2>
+    <div class="stack-grid reveal">
+      <div class="stack-item">
+        <div class="stack-label">Transport</div>
+        <div class="stack-name">QUIC</div>
+        <div class="stack-desc">UDP, 0-RTT, connection migration</div>
+      </div>
+      <div class="stack-item">
+        <div class="stack-label">Encryption</div>
+        <div class="stack-name">Noise Protocol</div>
+        <div class="stack-desc">ChaCha20-Poly1305, E2E</div>
+      </div>
+      <div class="stack-item">
+        <div class="stack-label">Backend</div>
+        <div class="stack-name">Rust</div>
+        <div class="stack-desc">Daemon + Hub, zero-copy I/O</div>
+      </div>
+      <div class="stack-item">
+        <div class="stack-label">iOS</div>
+        <div class="stack-name">SwiftUI</div>
+        <div class="stack-desc">Native, SwiftTerm, TCA</div>
+      </div>
+    </div>
+  </section>
 
-    <footer>
-      <a href="/" class="logo">fil<span>.</span></a>
+  <!-- How it works -->
+  <section class="how" id="how">
+    <h2 class="section-title reveal">Three steps.<br><em>Two</em> minutes.</h2>
+    <div class="steps">
+      <div class="step reveal">
+        <div class="step-number">1</div>
+        <h3>Install</h3>
+        <p>One command. Works on any Mac.</p>
+        <code>curl -fsSL https://fil.sh/install.sh | sh</code>
+      </div>
+      <div class="step reveal">
+        <div class="step-number">2</div>
+        <h3>Authenticate</h3>
+        <p>Sign in with GitHub. Browser opens, done.</p>
+        <code>fil setup</code>
+      </div>
+      <div class="step reveal">
+        <div class="step-number">3</div>
+        <h3>Connect</h3>
+        <p>Open the app on your iPhone. Sessions are there.</p>
+        <code>fil</code>
+      </div>
+    </div>
+  </section>
+
+  <!-- Self-host -->
+  <section class="selfhost reveal">
+    <h2>Own your data.</h2>
+    <p>Run the Fil hub on your own server.</p>
+    <code>docker run -d -p 3100:3100 -p 16433:16433/udp fil/hub</code>
+  </section>
+
+  <!-- Footer -->
+  <footer>
+    <div class="footer-inner">
+      <a href="/" class="logo">fil<span>.sh</span></a>
       <div class="links">
         <a href="https://github.com/Remenby31/fil">GitHub</a>
         <a href="/privacy">Privacy</a>
         <a href="mailto:hello@fil.sh">Contact</a>
       </div>
       <div class="copy">© 2026 Fil. MIT License.</div>
-    </footer>
-  </div>
+    </div>
+  </footer>
+
+  <!-- Scroll reveal script -->
+  <script>
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          entry.target.classList.add('visible');
+        }
+      });
+    }, { threshold: 0.1, rootMargin: '0px 0px -40px 0px' });
+
+    document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
+  </script>
 </body>
 </html>
 
@@ -152,11 +211,11 @@ const description = "Access your Mac terminal sessions from your iPhone. One thr
   :root {
     --void: #0A0A0F;
     --fil-green: #00D4AA;
-    --surface: #1A1A2E;
+    --surface: #12121A;
     --cloud: #FAFAFA;
     --depth: #0D1117;
-    --elevated: #161B22;
     --fil-light: #55EFC4;
+    --text-secondary: rgba(250,250,250,0.45);
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
@@ -165,78 +224,312 @@ const description = "Access your Mac terminal sessions from your iPhone. One thr
     color: var(--cloud);
     overflow-x: hidden;
   }
-  .container { max-width: 1100px; margin: 0 auto; padding: 0 24px; }
 
-  nav { padding: 20px 0; display: flex; align-items: center; justify-content: space-between; }
-  .logo { font-size: 24px; font-weight: 300; color: var(--cloud); text-decoration: none; }
+  /* Scroll reveal */
+  .reveal {
+    opacity: 0;
+    transform: translateY(24px);
+    transition: opacity 0.7s ease, transform 0.7s ease;
+  }
+  .reveal.visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  .delay-1 { transition-delay: 0.1s; }
+  .delay-2 { transition-delay: 0.2s; }
+  .delay-3 { transition-delay: 0.3s; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .reveal { opacity: 1; transform: none; transition: none; }
+  }
+
+  /* Nav */
+  nav {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: rgba(10,10,15,0.8);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+  }
+  .nav-inner {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 16px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .logo { font-size: 20px; font-weight: 300; color: var(--cloud); text-decoration: none; }
   .logo span { color: var(--fil-green); }
-  .nav-link { color: rgba(250,250,250,0.5); text-decoration: none; font-size: 14px; transition: color 0.2s; }
+  .nav-links { display: flex; gap: 24px; align-items: center; }
+  .nav-link {
+    color: var(--text-secondary);
+    text-decoration: none;
+    font-size: 13px;
+    font-weight: 500;
+    transition: color 0.2s;
+    display: inline-flex;
+    align-items: center;
+  }
   .nav-link:hover { color: var(--cloud); }
-  .nav-links { display: flex; gap: 28px; align-items: center; }
 
-  .hero { text-align: center; padding: 100px 0 80px; }
-  .hero h1 { font-size: clamp(36px, 5vw, 64px); font-weight: 300; line-height: 1.15; margin-bottom: 20px; letter-spacing: -1px; }
-  .hero h1 em { font-style: normal; color: var(--fil-green); }
-  .hero p { font-size: 18px; color: rgba(250,250,250,0.5); max-width: 520px; margin: 0 auto 40px; line-height: 1.6; }
-  .install-cmd { display: inline-flex; align-items: center; gap: 12px; padding: 14px 24px; background: var(--depth); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; cursor: pointer; transition: border-color 0.2s; margin-bottom: 20px; }
-  .install-cmd:hover { border-color: var(--fil-green); }
-  .install-cmd:active { transform: scale(0.99); }
-  .install-prompt { color: var(--fil-green); font-family: 'JetBrains Mono', monospace; font-size: 14px; }
-  .install-text { color: var(--cloud); font-family: 'JetBrains Mono', monospace; font-size: 14px; }
-  .install-copy { color: rgba(250,250,250,0.3); transition: color 0.2s; margin-left: 8px; }
+  /* Hero */
+  .hero {
+    max-width: 720px;
+    margin: 0 auto;
+    text-align: center;
+    padding: 80px 24px 60px;
+  }
+  .hero-badge {
+    display: inline-block;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--fil-green);
+    background: rgba(0,212,170,0.08);
+    border: 1px solid rgba(0,212,170,0.15);
+    padding: 6px 16px;
+    border-radius: 100px;
+    margin-bottom: 28px;
+    letter-spacing: 0.3px;
+  }
+  .hero h1 {
+    font-size: clamp(36px, 6vw, 72px);
+    font-weight: 300;
+    line-height: 1.1;
+    margin-bottom: 20px;
+    letter-spacing: -2px;
+  }
+  .hero h1 em, .section-title em { font-style: normal; color: var(--fil-green); }
+  .hero p {
+    font-size: 17px;
+    color: var(--text-secondary);
+    line-height: 1.7;
+    margin-bottom: 36px;
+  }
+
+  /* Install command */
+  .install-cmd {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 20px;
+    background: var(--depth);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.2s;
+    margin-bottom: 40px;
+  }
+  .install-cmd:hover { border-color: var(--fil-green); background: rgba(0,212,170,0.04); }
+  .install-prompt { color: var(--fil-green); font-family: 'JetBrains Mono', monospace; font-size: 13px; }
+  .install-text { color: var(--cloud); font-family: 'JetBrains Mono', monospace; font-size: 13px; }
+  .install-copy { color: rgba(250,250,250,0.2); transition: color 0.2s; }
   .install-cmd:hover .install-copy { color: var(--fil-green); }
+  .install-cmd.copied .install-copy { color: var(--fil-green); }
 
-  .hero-cta { display: inline-flex; gap: 12px; flex-wrap: wrap; justify-content: center; margin-bottom: 8px; }
-  .github-link { color: rgba(250,250,250,0.3); transition: color 0.2s; }
-  .github-link:hover { color: var(--cloud); }
-
-  .btn { display: inline-flex; align-items: center; gap: 8px; padding: 14px 28px; border-radius: 10px; font-size: 15px; font-weight: 500; text-decoration: none; transition: all 0.2s; }
-  .btn-primary { background: var(--fil-green); color: var(--void); }
-  .btn-primary:hover { background: var(--fil-light); }
-  .btn-secondary { background: var(--surface); color: var(--cloud); border: 1px solid rgba(255,255,255,0.08); }
-  .btn-secondary:hover { border-color: rgba(255,255,255,0.2); }
-
-  .cli-preview { max-width: 600px; margin: 60px auto 0; background: var(--depth); border: 1px solid rgba(255,255,255,0.06); border-radius: 12px; overflow: hidden; }
-  .cli-bar { padding: 10px 16px; display: flex; gap: 6px; background: rgba(255,255,255,0.02); }
-  .cli-dot { width: 10px; height: 10px; border-radius: 50%; background: rgba(255,255,255,0.1); }
-  .cli-body { padding: 20px; font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 1.9; }
-  .prompt { color: var(--fil-green); }
+  /* CLI Preview */
+  .cli-preview {
+    max-width: 560px;
+    margin: 0 auto;
+    background: var(--depth);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 10px;
+    overflow: hidden;
+    text-align: left;
+  }
+  .cli-bar {
+    padding: 10px 14px;
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    background: rgba(255,255,255,0.02);
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+  }
+  .cli-dot { width: 10px; height: 10px; border-radius: 50%; }
+  .cli-dot.red { background: #ff5f57; }
+  .cli-dot.yellow { background: #febc2e; }
+  .cli-dot.green { background: #28c840; }
+  .cli-title { font-size: 11px; color: rgba(250,250,250,0.25); margin-left: auto; margin-right: auto; }
+  .cli-body { padding: 16px 18px; font-family: 'JetBrains Mono', monospace; font-size: 12px; line-height: 1.9; }
+  .dim { color: rgba(250,250,250,0.3); }
   .cmd { color: var(--cloud); }
-  .dim { color: rgba(250,250,250,0.35); }
   .ok { color: var(--fil-green); }
 
-  .features { padding: 100px 0; }
-  .features h2 { text-align: center; font-size: 32px; font-weight: 300; margin-bottom: 60px; }
-  .feature-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
-  .feature-card { background: var(--surface); border: 1px solid rgba(255,255,255,0.04); border-radius: 14px; padding: 28px; }
-  .feature-icon { font-size: 28px; margin-bottom: 16px; display: block; }
-  .feature-card h3 { font-size: 17px; font-weight: 600; margin-bottom: 8px; }
-  .feature-card p { font-size: 14px; color: rgba(250,250,250,0.5); line-height: 1.6; }
+  .type-line {
+    opacity: 0;
+    animation: typeIn 0.3s ease forwards;
+    animation-delay: var(--delay);
+  }
+  @keyframes typeIn {
+    from { opacity: 0; transform: translateX(-4px); }
+    to { opacity: 1; transform: translateX(0); }
+  }
 
-  .how { padding: 80px 0; }
-  .how h2 { text-align: center; font-size: 32px; font-weight: 300; margin-bottom: 60px; }
+  /* Section titles */
+  .section-title {
+    text-align: center;
+    font-size: clamp(28px, 4vw, 44px);
+    font-weight: 300;
+    letter-spacing: -1px;
+    margin-bottom: 56px;
+    line-height: 1.2;
+  }
+
+  /* Features */
+  .features {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 100px 24px;
+  }
+  .feature-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+  }
+  .feature-card {
+    background: var(--surface);
+    border: 1px solid rgba(255,255,255,0.04);
+    border-radius: 12px;
+    padding: 28px 24px;
+    transition: border-color 0.3s, transform 0.3s;
+  }
+  .feature-card:hover {
+    border-color: rgba(0,212,170,0.15);
+    transform: translateY(-2px);
+  }
+  .feature-icon-wrap {
+    width: 40px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0,212,170,0.08);
+    border-radius: 8px;
+    margin-bottom: 16px;
+    color: var(--fil-green);
+  }
+  .feature-card h3 { font-size: 15px; font-weight: 600; margin-bottom: 8px; }
+  .feature-card p { font-size: 13px; color: var(--text-secondary); line-height: 1.6; }
+
+  /* Stack */
+  .stack {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 80px 24px;
+  }
+  .stack-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+  }
+  .stack-item {
+    text-align: center;
+    padding: 32px 20px;
+    background: var(--surface);
+    border: 1px solid rgba(255,255,255,0.04);
+    border-radius: 12px;
+    transition: border-color 0.3s;
+  }
+  .stack-item:hover { border-color: rgba(0,212,170,0.15); }
+  .stack-label {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--fil-green);
+    margin-bottom: 8px;
+  }
+  .stack-name {
+    font-size: 20px;
+    font-weight: 600;
+    margin-bottom: 6px;
+  }
+  .stack-desc {
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+
+  /* How it works */
+  .how {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 80px 24px;
+  }
   .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 32px; }
   .step { text-align: center; }
-  .step-number { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; border-radius: 50%; background: var(--fil-green); color: var(--void); font-weight: 700; font-size: 16px; margin-bottom: 16px; }
-  .step h3 { font-size: 16px; font-weight: 600; margin-bottom: 8px; }
-  .step p { font-size: 14px; color: rgba(250,250,250,0.5); line-height: 1.6; }
-  .step code { display: inline-block; margin-top: 8px; padding: 6px 14px; background: var(--depth); border-radius: 6px; font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--fil-green); border: none; }
+  .step-number {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px; height: 36px;
+    border-radius: 50%;
+    background: var(--fil-green);
+    color: var(--void);
+    font-weight: 700;
+    font-size: 14px;
+    margin-bottom: 14px;
+  }
+  .step h3 { font-size: 15px; font-weight: 600; margin-bottom: 6px; }
+  .step p { font-size: 13px; color: var(--text-secondary); line-height: 1.6; margin-bottom: 10px; }
+  .step code {
+    display: inline-block;
+    padding: 6px 12px;
+    background: var(--depth);
+    border-radius: 6px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: var(--fil-green);
+    border: none;
+  }
 
-  .selfhost { padding: 80px 0; text-align: center; }
-  .selfhost h2 { font-size: 28px; font-weight: 300; margin-bottom: 12px; }
-  .selfhost p { color: rgba(250,250,250,0.5); font-size: 15px; margin-bottom: 28px; }
-  .selfhost code { display: inline-block; padding: 14px 28px; background: var(--depth); border: 1px solid rgba(255,255,255,0.06); border-radius: 10px; font-family: 'JetBrains Mono', monospace; font-size: 14px; color: var(--fil-green); }
+  /* Self-host */
+  .selfhost {
+    max-width: 600px;
+    margin: 0 auto;
+    padding: 80px 24px;
+    text-align: center;
+  }
+  .selfhost h2 { font-size: 28px; font-weight: 300; margin-bottom: 10px; letter-spacing: -0.5px; }
+  .selfhost p { color: var(--text-secondary); font-size: 14px; margin-bottom: 24px; }
+  .selfhost code {
+    display: inline-block;
+    padding: 12px 20px;
+    background: var(--depth);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 8px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: var(--fil-green);
+  }
 
-  footer { padding: 60px 0 40px; border-top: 1px solid rgba(255,255,255,0.04); text-align: center; }
-  footer .logo { font-size: 20px; display: block; margin-bottom: 16px; }
-  footer .links { display: flex; justify-content: center; gap: 24px; margin-bottom: 20px; }
-  footer a { color: rgba(250,250,250,0.4); text-decoration: none; font-size: 13px; transition: color 0.2s; }
+  /* Footer */
+  footer {
+    border-top: 1px solid rgba(255,255,255,0.04);
+  }
+  .footer-inner {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 40px 24px 32px;
+    text-align: center;
+  }
+  footer .logo { font-size: 18px; display: block; margin-bottom: 14px; }
+  .links { display: flex; justify-content: center; gap: 20px; margin-bottom: 16px; }
+  footer a { color: rgba(250,250,250,0.35); text-decoration: none; font-size: 12px; transition: color 0.2s; }
   footer a:hover { color: var(--cloud); }
-  .copy { font-size: 12px; color: rgba(250,250,250,0.2); }
+  .copy { font-size: 11px; color: rgba(250,250,250,0.15); }
 
+  /* Responsive */
   @media (max-width: 768px) {
-    .steps { grid-template-columns: 1fr; gap: 40px; }
-    .hero { padding: 60px 0 40px; }
-    .nav-links { display: none; }
+    .feature-grid { grid-template-columns: 1fr; }
+    .stack-grid { grid-template-columns: repeat(2, 1fr); }
+    .steps { grid-template-columns: 1fr; gap: 32px; }
+    .hero { padding: 60px 24px 40px; }
+    .nav-links { gap: 16px; }
+    .install-text { font-size: 11px; }
+  }
+  @media (max-width: 480px) {
+    .stack-grid { grid-template-columns: 1fr; }
+    .nav-links .nav-link:not(:last-child) { display: none; }
   }
 </style>
