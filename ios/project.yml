@@ -87,3 +87,28 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: sh.fil.app.widgets
         CODE_SIGN_ENTITLEMENTS: FilWidgets/FilWidgets.entitlements
+
+  FilTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - FilTests
+    dependencies:
+      - target: Fil
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: sh.fil.app.tests
+        GENERATE_INFOPLIST_FILE: true
+
+schemes:
+  Fil:
+    build:
+      targets:
+        Fil: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      gatherCoverageData: false
+      targets:
+        - FilTests

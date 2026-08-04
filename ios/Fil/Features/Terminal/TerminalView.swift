@@ -459,6 +459,17 @@ struct SwiftTermWrapper: UIViewRepresentable {
         context.coordinator.onSizeChanged = onSizeChanged
         context.coordinator.apply(searchCommand, to: uiView)
 
+        // Defence in depth. The relay is now stable for a session's lifetime,
+        // but `makeUIView` used to be the only place it was ever resolved, so
+        // any future lifecycle slip would silently leave this view wired to a
+        // dead relay and the terminal would go blank while looking connected.
+        let relay = TerminalConnectionRegistry.shared.outputRelay(sessionId: sessionId)
+        if context.coordinator.outputRelay !== relay {
+            context.coordinator.outputRelay?.detach(uiView)
+            context.coordinator.outputRelay = relay
+            relay.attach(uiView)
+        }
+
         if context.coordinator.appliedFontSize != fontSize {
             context.coordinator.appliedFontSize = fontSize
             uiView.font = UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)

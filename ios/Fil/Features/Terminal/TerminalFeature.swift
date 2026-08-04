@@ -14,6 +14,7 @@ struct TerminalFeature {
     struct State: Equatable {
         var session: Session
         var isConnected = false
+        var connectionState: TerminalConnectionState = .connecting
         var fontSize: CGFloat
         var latencyMs: Int?
         var showDisconnectedAlert = false
@@ -43,8 +44,7 @@ struct TerminalFeature {
     enum Action: Equatable {
         case onAppear
         case onDisappear
-        case connected
-        case disconnected
+        case connectionStateChanged(TerminalConnectionState)
         case inputSent(Data)
         case dismiss
         case fontSizeChanged(CGFloat)
@@ -81,13 +81,8 @@ struct TerminalFeature {
                         }
                     },
                     .run { send in
-                        for await event in terminalClient.connect(sessionId, hubHost) {
-                            switch event {
-                            case .connected:
-                                await send(.connected)
-                            case .disconnected:
-                                await send(.disconnected)
-                            }
+                        for await connectionState in terminalClient.open(sessionId, hubHost) {
+                            await send(.connectionStateChanged(connectionState))
                         }
                     }
                     .cancellable(id: CancelID.quic, cancelInFlight: true)
@@ -97,37 +92,24 @@ struct TerminalFeature {
                 let sessionId = state.session.id
                 return .merge(
                     .cancel(id: CancelID.quic),
-                    .run { _ in terminalClient.disconnect(sessionId) }
+                    .run { _ in terminalClient.close(sessionId) }
                 )
 
-            case .connected:
-                state.isConnected = true
-                state.showDisconnectedAlert = false
-                let session = state.session
-                let sessionId = session.id
-                let otherSessionCount = state.otherSessionCount
-                return .run { _ in
-                    if #available(iOS 16.2, *) {
-                        await FilActivityManager.shared.update(
-                            sessionId: sessionId,
-                            status: .connected,
-                            cwd: session.cwd,
-                            processName: session.processName,
-                            otherSessionCount: otherSessionCount
-                        )
-                    }
-                }
-
-            case .disconnected:
-                state.isConnected = false
-                state.showDisconnectedAlert = true
+            case .connectionStateChanged(let connectionState):
+                state.connectionState = connectionState
+                state.isConnected = connectionState == .connected
+                // Only the terminal states warrant a modal; a retry in flight
+                // is shown inline so a two-second blip does not black out the
+                // screen.
+                state.showDisconnectedAlert = connectionState.needsUserAction
                 let session = state.session
                 let otherSessionCount = state.otherSessionCount
+                let activityStatus = connectionState.activityStatus
                 return .run { _ in
                     if #available(iOS 16.2, *) {
                         await FilActivityManager.shared.update(
                             sessionId: session.id,
-                            status: .reconnecting,
+                            status: activityStatus,
                             cwd: session.cwd,
                             processName: session.processName,
                             otherSessionCount: otherSessionCount
@@ -150,9 +132,11 @@ struct TerminalFeature {
             case .terminalSizeChanged(let cols, let rows):
                 let cols = max(1, min(Int(UInt16.max), cols))
                 let rows = max(1, min(Int(UInt16.max), rows))
-                guard state.session.cols != UInt32(cols) || state.session.rows != UInt32(rows) else {
-                    return .none
-                }
+                // No early-return on an unchanged size. The reducer's copy
+                // survives reconnects while the connection's does not, so
+                // skipping here is exactly what left a reconnected PTY stuck
+                // at the Mac's geometry. Per-connection dedup lives in
+                // QUICTerminalClient, which resets it on every connect.
                 state.session.cols = UInt32(cols)
                 state.session.rows = UInt32(rows)
                 let sessionId = state.session.id
@@ -165,8 +149,12 @@ struct TerminalFeature {
                 return .none
 
             case .reconnectTapped:
+                // Do NOT re-send .onAppear: the subscription is already live
+                // and restarting it would only churn the effect. Just ask the
+                // session for a fresh connection.
                 state.showDisconnectedAlert = false
-                return .send(.onAppear)
+                let sessionId = state.session.id
+                return .run { _ in terminalClient.reconnect(sessionId) }
 
             case .followTapped:
                 guard !state.isFollowRequestInFlight else { return .none }
@@ -264,13 +252,14 @@ struct TerminalFeature {
         state.machineName = target.machineName
         state.otherSessionCount = max(0, state.availableSessions.count - 1)
         state.isConnected = false
+        state.connectionState = .connecting
         state.isFollowing = false
         state.showDisconnectedAlert = false
         state.latencyMs = nil
 
         return .merge(
             .cancel(id: CancelID.quic),
-            .run { _ in terminalClient.disconnect(previousSessionId) },
+            .run { _ in terminalClient.close(previousSessionId) },
             .send(.onAppear)
         )
     }
@@ -287,25 +276,24 @@ struct TerminalFeature {
     }
 }
 
-enum TerminalClientEvent {
-    case connected
-    case disconnected
-}
-
 fileprivate struct TerminalClientDependency: Sendable {
-    var connect: @Sendable (_ sessionId: String, _ hubHost: String) -> AsyncStream<TerminalClientEvent>
-    var disconnect: @Sendable (_ sessionId: String) -> Void
+    var open: @Sendable (_ sessionId: String, _ hubHost: String) -> AsyncStream<TerminalConnectionState>
+    var close: @Sendable (_ sessionId: String) -> Void
+    var reconnect: @Sendable (_ sessionId: String) -> Void
     var sendInput: @Sendable (_ sessionId: String, _ data: Data) -> Void
     var resize: @Sendable (_ sessionId: String, _ cols: UInt16, _ rows: UInt16) -> Void
 }
 
 extension TerminalClientDependency: DependencyKey {
     static let liveValue = TerminalClientDependency(
-        connect: { sessionId, hubHost in
-            TerminalConnectionRegistry.shared.connect(sessionId: sessionId, hubHost: hubHost)
+        open: { sessionId, hubHost in
+            TerminalConnectionRegistry.shared.open(sessionId: sessionId, hubHost: hubHost)
         },
-        disconnect: { sessionId in
-            TerminalConnectionRegistry.shared.disconnect(sessionId: sessionId)
+        close: { sessionId in
+            TerminalConnectionRegistry.shared.close(sessionId: sessionId)
+        },
+        reconnect: { sessionId in
+            TerminalConnectionRegistry.shared.reconnect(sessionId: sessionId)
         },
         sendInput: { sessionId, data in
             TerminalConnectionRegistry.shared.sendInput(sessionId: sessionId, data: data)
@@ -316,83 +304,94 @@ extension TerminalClientDependency: DependencyKey {
     )
 
     static let testValue = TerminalClientDependency(
-        connect: { _, _ in AsyncStream { $0.finish() } },
-        disconnect: { _ in },
+        open: { _, _ in AsyncStream { $0.finish() } },
+        close: { _ in },
+        reconnect: { _ in },
         sendInput: { _, _ in },
         resize: { _, _, _ in }
     )
 }
 
+/// Owns `TerminalSession`s. Sessions are created on first use and destroyed
+/// only by an explicit `close` — never by a view disappearing or a TCA effect
+/// being cancelled.
 final class TerminalConnectionRegistry: @unchecked Sendable {
     static let shared = TerminalConnectionRegistry()
 
     private let lock = NSLock()
-    private var clients: [String: QUICTerminalClient] = [:]
-    private var outputRelays: [String: TerminalOutputRelay] = [:]
+    private var sessions: [String: TerminalSession] = [:]
 
+    /// Overridable so tests can drive the state machine without networking.
+    var makeTransport: @Sendable (_ sessionId: String, _ hubHost: String) -> TerminalTransport = {
+        _, hubHost in
+        QUICTerminalClient(hubHost: hubHost)
+    }
+
+    /// The relay for a session, created with the session and stable for its
+    /// whole life. `makeUIView` can run before `open`, so this creates the
+    /// session record on demand.
     func outputRelay(sessionId: String) -> TerminalOutputRelay {
+        session(sessionId: sessionId, hubHost: nil).outputRelay
+    }
+
+    private func session(sessionId: String, hubHost: String?) -> TerminalSession {
         lock.filWithLock {
-            if let relay = outputRelays[sessionId] {
-                return relay
+            if let existing = sessions[sessionId] {
+                return existing
             }
-            let relay = TerminalOutputRelay()
-            outputRelays[sessionId] = relay
-            return relay
+            let host = hubHost ?? ""
+            let make = makeTransport
+            let created = TerminalSession(sessionId: sessionId) { sid in
+                make(sid, host)
+            }
+            sessions[sessionId] = created
+            return created
         }
     }
 
-    func connect(sessionId: String, hubHost: String) -> AsyncStream<TerminalClientEvent> {
-        AsyncStream { continuation in
-            let client = QUICTerminalClient(hubHost: hubHost)
-            let outputRelay = outputRelay(sessionId: sessionId)
-            client.onConnected = {
-                continuation.yield(.connected)
-            }
-            client.onDisconnected = {
-                continuation.yield(.disconnected)
-            }
-            client.onDataReceived = { data in
-                outputRelay.enqueue(data)
-            }
-
-            lock.filWithLock {
-                clients[sessionId]?.disconnect()
-                clients[sessionId] = client
-            }
-
-            continuation.onTermination = { [weak self, weak client] _ in
-                client?.disconnect()
-                self?.remove(sessionId: sessionId, client: client)
-            }
-
-            client.connect(sessionId: sessionId)
-        }
+    /// Subscribe to a session's state, connecting it if it is not already up.
+    /// Idempotent: repeated calls attach another subscriber to the same live
+    /// connection instead of tearing it down and rebuilding it.
+    func open(sessionId: String, hubHost: String) -> AsyncStream<TerminalConnectionState> {
+        let session = session(sessionId: sessionId, hubHost: hubHost)
+        let stream = session.subscribe()
+        session.connectIfNeeded()
+        return stream
     }
 
-    func disconnect(sessionId: String) {
-        let client = lock.filWithLock {
-            outputRelays.removeValue(forKey: sessionId)
-            return clients.removeValue(forKey: sessionId)
-        }
-        client?.disconnect()
+    /// Force a fresh connection for a session that is already open.
+    func reconnect(sessionId: String) {
+        lock.filWithLock { sessions[sessionId] }?.reconnectNow()
+    }
+
+    /// The only teardown path.
+    func close(sessionId: String) {
+        let session = lock.filWithLock { sessions.removeValue(forKey: sessionId) }
+        session?.shutdown()
     }
 
     func sendInput(sessionId: String, data: Data) {
-        let client = lock.filWithLock { clients[sessionId] }
-        client?.sendInput(data)
+        lock.filWithLock { sessions[sessionId] }?.sendInput(data)
     }
 
     func resize(sessionId: String, cols: UInt16, rows: UInt16) {
-        let client = lock.filWithLock { clients[sessionId] }
-        client?.sendResize(cols: cols, rows: rows)
+        lock.filWithLock { sessions[sessionId] }?.resize(cols: cols, rows: rows)
     }
 
-    private func remove(sessionId: String, client: QUICTerminalClient?) {
-        lock.filWithLock {
-            if let client, clients[sessionId] === client {
-                clients.removeValue(forKey: sessionId)
-                outputRelays.removeValue(forKey: sessionId)
-            }
+    // MARK: - Test seams
+
+    func existingSession(sessionId: String) -> TerminalSession? {
+        lock.filWithLock { sessions[sessionId] }
+    }
+
+    func removeAllSessions() {
+        let all = lock.filWithLock {
+            let s = sessions
+            sessions.removeAll()
+            return s
+        }
+        for (_, session) in all {
+            session.shutdown()
         }
     }
 }
