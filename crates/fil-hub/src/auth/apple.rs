@@ -1,10 +1,9 @@
+use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::Json;
 use serde::Deserialize;
-use tracing::{debug, error, info};
-use uuid::Uuid;
+use tracing::{debug, error};
 
 use crate::auth::jwt;
 use crate::state::AppState;
@@ -12,7 +11,6 @@ use crate::state::AppState;
 #[derive(Deserialize)]
 pub struct AppleAuthRequest {
     identity_token: String,
-    user_id: Option<String>,
     email: Option<String>,
     full_name: Option<String>,
 }
@@ -33,7 +31,10 @@ pub async fn apple_auth_callback(
     // In production, we'd verify the signature against Apple's public keys.
     // For now, we decode the payload without verification since the token
     // comes directly from the iOS app (trusted client).
-    let claims = match decode_apple_token(&req.identity_token) {
+    let claims = match decode_apple_token(
+        &req.identity_token,
+        (!state.config.apple_client_id.is_empty()).then_some(state.config.apple_client_id.as_str()),
+    ) {
         Ok(claims) => claims,
         Err(e) => {
             error!(error = %e, "failed to decode Apple identity token");
@@ -49,8 +50,13 @@ pub async fn apple_auth_callback(
 
     // Find or create user (with cross-provider email linking)
     let user_id = crate::auth::shared::find_or_create_user(
-        &state.db.pool, "apple", &apple_user_id, email.as_deref(), &display_name,
-    ).await;
+        &state.db.pool,
+        "apple",
+        &apple_user_id,
+        email.as_deref(),
+        &display_name,
+    )
+    .await;
 
     // Generate JWT
     let token = match jwt::create_token(&user_id, &state.config.jwt_secret) {
@@ -68,7 +74,7 @@ pub async fn apple_auth_callback(
     .into_response()
 }
 
-fn decode_apple_token(token: &str) -> Result<AppleTokenClaims, String> {
+fn decode_apple_token(token: &str, expected_audience: Option<&str>) -> Result<AppleTokenClaims, String> {
     let parts: Vec<&str> = token.split('.').collect();
     if parts.len() != 3 {
         return Err("invalid JWT format".to_string());
@@ -84,6 +90,11 @@ fn decode_apple_token(token: &str) -> Result<AppleTokenClaims, String> {
         if iss != "https://appleid.apple.com" {
             return Err(format!("invalid issuer: {iss}"));
         }
+    }
+    if let Some(expected_audience) = expected_audience
+        && claims.aud.as_deref() != Some(expected_audience)
+    {
+        return Err("invalid audience".to_string());
     }
 
     Ok(claims)

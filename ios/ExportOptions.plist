@@ -2,8 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>method</key>
-    <string>app-store-connect</string>
+	<key>method</key>
+	<string>app-store-connect</string>
+	<key>manageAppVersionAndBuildNumber</key>
+	<false/>
     <key>teamID</key>
     <string>3SNT64YKAS</string>
     <key>signingStyle</key>
@@ -12,7 +14,5 @@
     <true/>
     <key>destination</key>
     <string>upload</string>
-    <key>testFlightInternalTestingOnly</key>
-    <true/>
 </dict>
 </plist>

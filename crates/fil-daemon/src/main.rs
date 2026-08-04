@@ -1,164 +1,64 @@
 mod config;
-mod hub;
-mod pty;
-mod quic_client;
-mod setup;
-mod terminal;
+mod hub_quic;
+mod hub_ws;
+mod ipc_server;
+mod process_metadata;
+mod session_manager;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
 use config::DaemonConfig;
-use tokio::sync::mpsc;
-use tracing::{debug, warn};
-use uuid::Uuid;
-
-#[derive(Parser)]
-#[command(name = "fil", version, about = "The thread to your terminals.")]
-struct Cli {
-    #[command(subcommand)]
-    command: Option<Commands>,
-}
-
-#[derive(Subcommand)]
-enum Commands {
-    /// Set up Fil: authenticate and configure your terminal
-    Setup {
-        /// Hub URL (default: http://localhost:3100)
-        #[arg(long)]
-        hub: Option<String>,
-    },
-    /// Remove Fil configuration and restore terminal settings
-    Uninstall,
-    /// Show version information
-    Version,
-}
+use session_manager::SessionManager;
+use std::sync::Arc;
+use tracing::info;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = Cli::parse();
-
-    let default_level = if cli.command.is_some() { "fil=info" } else { "fil=off" };
     tracing_subscriber::fmt()
-        .with_env_filter(
-            std::env::var("FIL_LOG").unwrap_or_else(|_| default_level.to_string()),
-        )
+        .with_env_filter(std::env::var("FIL_LOG").unwrap_or_else(|_| "fil_daemon=info".to_string()))
         .with_writer(std::io::stderr)
         .init();
 
-    match cli.command {
-        Some(Commands::Setup { hub }) => setup::run_setup(hub).await,
-        Some(Commands::Uninstall) => setup::run_uninstall(),
-        Some(Commands::Version) => {
-            println!("fil v{}", env!("CARGO_PKG_VERSION"));
-            Ok(())
-        }
-        None => run_proxy(),
-    }
-}
-
-fn run_proxy() -> Result<()> {
     let config = DaemonConfig::load();
-    let shell = pty::detect_shell();
+    if !config.is_configured() {
+        anyhow::bail!("fil is not configured. Run `fil setup` first.");
+    }
 
-    let pty_process = pty::spawn_pty(&shell)?;
+    info!(
+        device = %config.device_name,
+        hub = %config.hub_url,
+        "fil-daemon starting"
+    );
 
-    let session_id = Uuid::new_v4().to_string();
+    // Write pidfile
+    let pid_path = DaemonConfig::config_dir().join("daemon.pid");
+    std::fs::write(&pid_path, std::process::id().to_string())?;
 
-    // Channels for QUIC byte streaming
-    let (output_tx, input_rx) = if config.is_configured() {
-        let (otx, orx) = std::sync::mpsc::channel::<Vec<u8>>();
-        let (itx, irx) = std::sync::mpsc::channel::<Vec<u8>>();
+    let session_manager = Arc::new(SessionManager::new());
 
-        let hub_config = config.clone();
-        let sid = session_id.clone();
+    // Start hub connections (WebSocket + QUIC)
+    let ws_tx = hub_ws::start(config.clone(), session_manager.clone()).await;
+    let quic_endpoint = hub_quic::start(config.clone()).await?;
 
-        // Background thread: QUIC data stream + WebSocket control
-        std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
+    // Start IPC server (accepts proxy connections)
+    let sock_path = DaemonConfig::config_dir().join("daemon.sock");
+    if sock_path.exists() {
+        std::fs::remove_file(&sock_path).ok();
+    }
 
-            rt.block_on(async move {
-                // WebSocket for control plane (session lifecycle, heartbeat)
-                let shell_name = std::env::var("SHELL").unwrap_or_default();
-                let cwd = std::env::current_dir()
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_default();
+    info!(path = %sock_path.display(), "listening for proxies");
 
-                let (hub_conn, ws_outgoing_rx) =
-                    hub::HubConnection::new(&hub_config.hub_url, &hub_config.device_id);
-                let ws_tx = hub_conn.sender();
+    let result = ipc_server::run(
+        &sock_path,
+        session_manager.clone(),
+        ws_tx,
+        quic_endpoint,
+        config,
+    )
+    .await;
 
-                let created_msg = hub::build_session_created(&sid, &shell_name, &cwd, 80, 24);
-                ws_tx.send(created_msg).await.ok();
+    // Cleanup
+    std::fs::remove_file(&sock_path).ok();
+    std::fs::remove_file(&pid_path).ok();
 
-                // Heartbeat
-                let hb_tx = ws_tx.clone();
-                let hb_did = hub_config.device_id.clone();
-                let hb_sid = sid.clone();
-                let hb_shell = shell_name.clone();
-                let hb_cwd = cwd.clone();
-                tokio::spawn(async move {
-                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
-                    loop {
-                        interval.tick().await;
-                        let si = fil_protocol::proto::SessionInfo {
-                            session_id: hb_sid.clone(), shell: hb_shell.clone(),
-                            cwd: hb_cwd.clone(), created_at: 0, cols: 80, rows: 24,
-                        };
-                        if hb_tx.send(hub::build_heartbeat(&hb_did, vec![si])).await.is_err() {
-                            break;
-                        }
-                    }
-                });
-
-                let (ws_incoming_tx, _) = tokio::sync::mpsc::channel(256);
-                tokio::spawn(async move {
-                    hub_conn.connect_and_run(ws_outgoing_rx, ws_incoming_tx).await.ok();
-                });
-
-                // QUIC data plane: stream PTY bytes
-                let quic_client = quic_client::QuicDataClient::new(
-                    &hub_config.effective_quic_host(), hub_config.quic_port,
-                );
-
-                // Bridge std::sync channels to tokio channels
-                let (quic_otx, quic_orx) = tokio::sync::mpsc::channel::<Vec<u8>>(512);
-                let quic_itx_sync = itx;
-
-                // Sync → Async bridge for output
-                std::thread::spawn(move || {
-                    while let Ok(data) = orx.recv() {
-                        if quic_otx.blocking_send(data).is_err() { break; }
-                    }
-                });
-
-                let (quic_input_tx, mut quic_input_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
-
-                // Async → Sync bridge for input
-                tokio::spawn(async move {
-                    while let Some(data) = quic_input_rx.recv().await {
-                        if quic_itx_sync.send(data).is_err() { break; }
-                    }
-                });
-
-                if let Err(_) = quic_client.connect_and_stream(
-                    sid, quic_orx, quic_input_tx,
-                ).await {
-                    // QUIC failed — still works offline
-                }
-            });
-        });
-
-        (Some(otx), Some(irx))
-    } else {
-        (None, None)
-    };
-
-    // Raw mode + synchronous poll loop
-    let _raw_guard = terminal::RawModeGuard::new()?;
-    let exit_code = pty::proxy_loop_sync(&pty_process, output_tx, input_rx)?;
-
-    std::process::exit(exit_code);
+    result
 }

@@ -13,7 +13,10 @@ enum TokenStorage {
     }
 
     static func loadToken() -> String? {
-        load(key: tokenKey)
+        if let envToken = ProcessInfo.processInfo.environment["FIL_AUTH_TOKEN"], !envToken.isEmpty {
+            return envToken
+        }
+        return load(key: tokenKey)
     }
 
     static func clearToken() {
@@ -43,7 +46,10 @@ enum TokenStorage {
     }
 
     static func loadHubUrl() -> String {
-        load(key: hubUrlKey) ?? "https://fil.remenby.fr"
+        if let envUrl = ProcessInfo.processInfo.environment["FIL_HUB_URL"], !envUrl.isEmpty {
+            return envUrl
+        }
+        return load(key: hubUrlKey) ?? "https://fil.remenby.fr"
     }
 
     // MARK: - Keychain Helpers

@@ -1,5 +1,6 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -51,7 +52,9 @@ impl DaemonConfig {
         let dir = Self::config_dir();
         std::fs::create_dir_all(&dir)?;
         let content = toml::to_string_pretty(self)?;
-        std::fs::write(Self::config_path(), content)?;
+        let path = Self::config_path();
+        std::fs::write(&path, content)?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
         Ok(())
     }
 
@@ -64,7 +67,8 @@ impl DaemonConfig {
             return self.quic_host.clone();
         }
         // Derive from hub_url: fil.remenby.fr → quic.fil.remenby.fr
-        let host = self.hub_url
+        let host = self
+            .hub_url
             .trim_start_matches("https://")
             .trim_start_matches("http://")
             .split(':')

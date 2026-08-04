@@ -50,9 +50,7 @@ pub async fn github_auth_start(
 
     let url = format!(
         "https://github.com/login/oauth/authorize?client_id={}&redirect_uri={}/auth/github/callback&state={}&scope=user:email",
-        state.config.github_client_id,
-        state.config.public_url,
-        oauth_state,
+        state.config.github_client_id, state.config.public_url, oauth_state,
     );
 
     Redirect::temporary(&url)
@@ -102,13 +100,19 @@ pub async fn github_auth_callback(
             Ok(data) => data,
             Err(e) => {
                 error!(error = %e, "failed to parse GitHub token response");
-                return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "GitHub auth failed")
+                return (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "GitHub auth failed",
+                )
                     .into_response();
             }
         },
         Err(e) => {
             error!(error = %e, "failed to exchange GitHub code");
-            return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "GitHub auth failed")
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "GitHub auth failed",
+            )
                 .into_response();
         }
     };
@@ -116,7 +120,10 @@ pub async fn github_auth_callback(
     // Get user info
     let user_res = client
         .get("https://api.github.com/user")
-        .header("Authorization", format!("Bearer {}", token_data.access_token))
+        .header(
+            "Authorization",
+            format!("Bearer {}", token_data.access_token),
+        )
         .header("User-Agent", "fil-hub")
         .send()
         .await;
@@ -126,13 +133,19 @@ pub async fn github_auth_callback(
             Ok(user) => user,
             Err(e) => {
                 error!(error = %e, "failed to parse GitHub user");
-                return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "GitHub auth failed")
+                return (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "GitHub auth failed",
+                )
                     .into_response();
             }
         },
         Err(e) => {
             error!(error = %e, "failed to fetch GitHub user");
-            return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "GitHub auth failed")
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "GitHub auth failed",
+            )
                 .into_response();
         }
     };
@@ -145,8 +158,13 @@ pub async fn github_auth_callback(
     let display_name = github_user.name.unwrap_or(github_user.login);
 
     let user_id = find_or_create_user(
-        &state.db.pool, "github", &provider_id, email.as_deref(), &display_name,
-    ).await;
+        &state.db.pool,
+        "github",
+        &provider_id,
+        email.as_deref(),
+        &display_name,
+    )
+    .await;
 
     // Generate JWT
     let token = jwt::create_token(&user_id, &state.config.jwt_secret).unwrap();

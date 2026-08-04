@@ -1,12 +1,14 @@
+use crate::config::DaemonConfig;
 use anyhow::{Context, Result};
-use std::path::PathBuf;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use crate::config::DaemonConfig;
 
 pub async fn run_setup(hub_url: Option<String>) -> Result<()> {
-    println!("\n  \x1b[1mfil\x1b[32m.sh\x1b[0m v{}\n", env!("CARGO_PKG_VERSION"));
+    println!(
+        "\n  \x1b[1mfil\x1b[32m.sh\x1b[0m v{}\n",
+        env!("CARGO_PKG_VERSION")
+    );
 
     let mut config = DaemonConfig::load();
     if let Some(url) = hub_url {
@@ -32,9 +34,7 @@ pub async fn run_setup(hub_url: Option<String>) -> Result<()> {
     // Step 2: Register device
     println!("\n  \x1b[2m[2/3]\x1b[0m Registering device...");
 
-    let hostname = gethostname::gethostname()
-        .to_string_lossy()
-        .to_string();
+    let hostname = gethostname::gethostname().to_string_lossy().to_string();
     config.device_name = hostname.clone();
 
     let client = reqwest::Client::new();
@@ -55,7 +55,9 @@ pub async fn run_setup(hub_url: Option<String>) -> Result<()> {
     }
 
     #[derive(serde::Deserialize)]
-    struct DeviceResp { id: String }
+    struct DeviceResp {
+        id: String,
+    }
 
     let device: DeviceResp = resp.json().await?;
     config.device_id = device.id;
@@ -63,10 +65,20 @@ pub async fn run_setup(hub_url: Option<String>) -> Result<()> {
 
     println!("    \x1b[32m✓\x1b[0m {}", config.device_name);
 
-    // Step 3: Show instructions
-    println!("\n  \x1b[2m[3/3]\x1b[0m Ready!");
+    // Step 3: Install daemon LaunchAgent
+    println!("\n  \x1b[2m[3/4]\x1b[0m Installing daemon...");
+
+    install_launch_agent()?;
+
+    println!("    \x1b[32m✓\x1b[0m Daemon installed");
+
+    // Step 4: Show instructions
+    println!("\n  \x1b[2m[4/4]\x1b[0m Ready!");
     println!();
-    println!("  \x1b[32m✓ All set!\x1b[0m Config saved to \x1b[2m{}\x1b[0m", DaemonConfig::config_path().display());
+    println!(
+        "  \x1b[32m✓ All set!\x1b[0m Config saved to \x1b[2m{}\x1b[0m",
+        DaemonConfig::config_path().display()
+    );
     println!();
     println!("  To use fil, run it in any terminal:");
     println!("    \x1b[32m$\x1b[0m fil");
@@ -75,6 +87,56 @@ pub async fn run_setup(hub_url: Option<String>) -> Result<()> {
     println!("    \x1b[2mGhostty:\x1b[0m  command = /usr/local/bin/fil");
     println!("    \x1b[2mkitty:\x1b[0m    shell /usr/local/bin/fil");
     println!();
+
+    Ok(())
+}
+
+fn launch_agent_path() -> std::path::PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("~"))
+        .join("Library/LaunchAgents/sh.fil.daemon.plist")
+}
+
+fn install_launch_agent() -> Result<()> {
+    let plist_path = launch_agent_path();
+
+    let plist = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>sh.fil.daemon</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/fil-daemon</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardErrorPath</key>
+    <string>/tmp/fil-daemon.log</string>
+    <key>StandardOutPath</key>
+    <string>/tmp/fil-daemon.log</string>
+</dict>
+</plist>"#;
+
+    if let Some(parent) = plist_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    // Unload if already loaded
+    std::process::Command::new("launchctl")
+        .args(["unload", &plist_path.to_string_lossy()])
+        .output()
+        .ok();
+
+    std::fs::write(&plist_path, plist)?;
+
+    std::process::Command::new("launchctl")
+        .args(["load", &plist_path.to_string_lossy()])
+        .output()
+        .context("failed to load LaunchAgent")?;
 
     Ok(())
 }
@@ -116,7 +178,8 @@ async fn run_oauth_flow(hub_url: &str) -> Result<String> {
 
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    html.len(), html
+                    html.len(),
+                    html
                 );
                 stream.write_all(response.as_bytes()).await.ok();
                 stream.flush().await.ok();
@@ -126,7 +189,8 @@ async fn run_oauth_flow(hub_url: &str) -> Result<String> {
                 }
                 break;
             } else {
-                let response = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                let response =
+                    "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
                 stream.write_all(response.as_bytes()).await.ok();
             }
         }
@@ -148,7 +212,9 @@ async fn run_oauth_flow(hub_url: &str) -> Result<String> {
 fn extract_token_from_request(request: &str) -> Option<String> {
     let first_line = request.lines().next()?;
     let path = first_line.split_whitespace().nth(1)?;
-    if !path.starts_with("/callback") { return None; }
+    if !path.starts_with("/callback") {
+        return None;
+    }
     let url = url::Url::parse(&format!("http://localhost{path}")).ok()?;
     url.query_pairs()
         .find(|(key, _)| key == "token")
@@ -158,6 +224,18 @@ fn extract_token_from_request(request: &str) -> Option<String> {
 pub fn run_uninstall() -> Result<()> {
     println!("\n  \x1b[1mfil\x1b[32m.sh\x1b[0m uninstall\n");
 
+    // Stop daemon
+    let plist_path = launch_agent_path();
+    if plist_path.exists() {
+        std::process::Command::new("launchctl")
+            .args(["unload", &plist_path.to_string_lossy()])
+            .output()
+            .ok();
+        std::fs::remove_file(&plist_path).ok();
+        println!("  \x1b[32m✓\x1b[0m Daemon stopped");
+    }
+
+    // Remove config
     let config_dir = DaemonConfig::config_dir();
     if config_dir.exists() {
         std::fs::remove_dir_all(&config_dir)?;

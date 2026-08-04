@@ -2,115 +2,118 @@ import SwiftUI
 
 struct OnboardingView: View {
     @Binding var isPresented: Bool
-    @State private var currentPage = 0
+    var onComplete: () -> Void = {}
 
-    private let pages: [(icon: String, title: String, subtitle: String)] = [
+    @State private var currentPage = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private let pages: [(icon: String, title: LocalizedStringKey, subtitle: LocalizedStringKey)] = [
         (
             "desktopcomputer",
-            "Your terminals follow you",
-            "See every terminal session from your Mac, right on your iPhone."
+            "Connect your Mac",
+            "Install Fil on your Mac and active terminals appear securely on your devices."
         ),
         (
-            "bell.badge",
-            "Never miss a thing",
-            "Get notified when builds finish, agents need input, or commands fail."
+            "iphone.gen3",
+            "Resume from anywhere",
+            "Open a session, type, and keep working from iPhone or iPad."
         ),
         (
-            "lock.shield",
-            "End-to-end encrypted",
-            "Your terminal data is encrypted. The hub can't read it. Nobody can."
+            "livephoto",
+            "Follow intentionally",
+            "Choose a terminal to show on the Lock Screen. Nothing is followed automatically."
         ),
     ]
 
     var body: some View {
-        ZStack {
-            FilTheme.void_.ignoresSafeArea()
-
-            VStack(spacing: 0) {
-                Spacer()
-
-                // Page content
+        NavigationStack {
+            VStack(spacing: 24) {
                 TabView(selection: $currentPage) {
-                    ForEach(0..<pages.count, id: \.self) { index in
-                        onboardingPage(pages[index])
+                    ForEach(pages.indices, id: \.self) { index in
+                        page(pages[index])
                             .tag(index)
                     }
                 }
-                .tabViewStyle(.page(indexDisplayMode: .never))
-                .frame(height: 300)
+                .tabViewStyle(.page(indexDisplayMode: .always))
 
-                // Page dots
-                HStack(spacing: 8) {
-                    ForEach(0..<pages.count, id: \.self) { index in
-                        Circle()
-                            .fill(index == currentPage ? FilTheme.filGreen : FilTheme.cloud.opacity(0.15))
-                            .frame(width: 7, height: 7)
-                            .animation(.easeInOut(duration: 0.2), value: currentPage)
-                    }
-                }
-                .padding(.top, 20)
-
-                Spacer()
-
-                // CTA
-                Button {
+                Button(currentPage < pages.count - 1 ? "Continue" : "Get Started") {
                     if currentPage < pages.count - 1 {
-                        withAnimation { currentPage += 1 }
+                        if reduceMotion {
+                            currentPage += 1
+                        } else {
+                            withAnimation { currentPage += 1 }
+                        }
                     } else {
-                        isPresented = false
+                        complete()
                     }
-                } label: {
-                    Text(currentPage < pages.count - 1 ? "Next" : "Get Started")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(FilTheme.void_)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 50)
-                        .background(FilTheme.filGreen)
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
                 }
-                .padding(.horizontal, 32)
-
+                .buttonStyle(.borderedProminent)
+                .buttonBorderShape(.roundedRectangle(radius: 14))
+                .tint(FilTheme.filGreen)
+                .controlSize(.large)
+                .frame(maxWidth: 520)
+                .padding(.horizontal, 24)
+                .padding(.bottom, 16)
+            }
+            .background(Color(uiColor: .systemBackground).ignoresSafeArea())
+            .toolbar {
                 if currentPage < pages.count - 1 {
-                    Button {
-                        isPresented = false
-                    } label: {
-                        Text("Skip")
-                            .font(.system(size: 14))
-                            .foregroundStyle(FilTheme.cloud.opacity(0.3))
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Skip") { complete() }
                     }
-                    .padding(.top, 12)
                 }
-
-                Spacer()
-                    .frame(height: 40)
             }
         }
     }
 
-    private func onboardingPage(_ page: (icon: String, title: String, subtitle: String)) -> some View {
-        VStack(spacing: 20) {
-            ZStack {
-                Circle()
-                    .fill(FilTheme.filGreen.opacity(0.08))
-                    .frame(width: 88, height: 88)
-
-                Image(systemName: page.icon)
-                    .font(.system(size: 34))
-                    .foregroundStyle(FilTheme.filGreen)
+    private func page(
+        _ page: (icon: String, title: LocalizedStringKey, subtitle: LocalizedStringKey)
+    ) -> some View {
+        ViewThatFits(in: .vertical) {
+            VStack(spacing: 24) {
+                Spacer()
+                pageContent(page)
+                Spacer()
             }
+
+            ScrollView {
+                pageContent(page)
+                    .padding(.vertical, 28)
+            }
+        }
+    }
+
+    private func pageContent(
+        _ page: (icon: String, title: LocalizedStringKey, subtitle: LocalizedStringKey)
+    ) -> some View {
+        VStack(spacing: 24) {
+            Image(systemName: page.icon)
+                .font(.system(size: 44, weight: .medium))
+                .foregroundStyle(FilTheme.filGreen)
+                .frame(width: 96, height: 96)
+                .background(FilTheme.filGreen.opacity(0.1), in: Circle())
+                .accessibilityHidden(true)
 
             VStack(spacing: 10) {
                 Text(page.title)
-                    .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(FilTheme.cloud)
+                    .font(.title2.bold())
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
 
                 Text(page.subtitle)
-                    .font(.system(size: 15))
-                    .foregroundStyle(FilTheme.cloud.opacity(0.45))
+                    .font(.body)
+                    .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
-                    .lineSpacing(3)
+                    .lineLimit(nil)
+                    .fixedSize(horizontal: false, vertical: true)
             }
+            .frame(maxWidth: 520)
+            .padding(.horizontal, 28)
         }
-        .padding(.horizontal, 40)
+    }
+
+    private func complete() {
+        onComplete()
+        isPresented = false
     }
 }

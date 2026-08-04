@@ -31,9 +31,13 @@ struct AuthFeature {
             case .onAppear:
                 state.isCheckingToken = true
                 return .run { send in
-                    if let token = TokenStorage.loadToken() {
+                    if TokenStorage.loadToken() != nil {
                         let hubURL = TokenStorage.loadHubUrl()
-                        let client = HubClient(baseURL: URL(string: hubURL)!)
+                        guard let baseURL = URL(string: hubURL) else {
+                            await send(.tokenCheckCompleted(false))
+                            return
+                        }
+                        let client = HubClient(baseURL: baseURL)
                         do {
                             _ = try await client.health()
                             await send(.tokenCheckCompleted(true))
@@ -62,7 +66,17 @@ struct AuthFeature {
                 state.errorMessage = nil
                 let hubURL = TokenStorage.loadHubUrl()
                 let callback = "fil://callback"
-                let authURL = URL(string: "\(hubURL)/auth/github/start?cli_callback=\(callback)")!
+                guard var components = URLComponents(string: "\(hubURL)/auth/github/start") else {
+                    state.isLoading = false
+                    state.errorMessage = HubError.invalidURL.localizedDescription
+                    return .none
+                }
+                components.queryItems = [.init(name: "cli_callback", value: callback)]
+                guard let authURL = components.url else {
+                    state.isLoading = false
+                    state.errorMessage = HubError.invalidURL.localizedDescription
+                    return .none
+                }
                 return .run { send in
                     do {
                         let token = try await GitHubAuthService.authenticate(startURL: authURL)
@@ -91,7 +105,9 @@ struct AuthFeature {
                 return .run { send in
                     do {
                         let hubURL = TokenStorage.loadHubUrl()
-                        let url = URL(string: "\(hubURL)/auth/apple/callback")!
+                        guard let url = URL(string: "\(hubURL)/auth/apple/callback") else {
+                            throw HubError.invalidURL
+                        }
                         var request = URLRequest(url: url)
                         request.httpMethod = "POST"
                         request.setValue("application/json", forHTTPHeaderField: "Content-Type")

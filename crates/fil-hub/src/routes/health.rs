@@ -1,10 +1,14 @@
 use axum::Json;
-use serde_json::{json, Value};
+use axum::extract::State;
+use serde_json::{Value, json};
 
-pub async fn health_check() -> Json<Value> {
+use crate::state::AppState;
+
+pub async fn health_check(State(state): State<AppState>) -> Json<Value> {
     Json(json!({
         "status": "ok",
         "version": env!("CARGO_PKG_VERSION"),
         "service": "fil-hub",
+        "live_activity_push_enabled": state.apns.is_enabled(),
     }))
 }

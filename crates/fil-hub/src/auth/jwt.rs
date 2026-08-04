@@ -1,12 +1,12 @@
 use anyhow::Result;
-use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
-    pub sub: String,   // user_id
-    pub exp: usize,    // expiration timestamp
-    pub iat: usize,    // issued at
+    pub sub: String, // user_id
+    pub exp: usize,  // expiration timestamp
+    pub iat: usize,  // issued at
 }
 
 pub fn create_token(user_id: &str, secret: &str) -> Result<String> {

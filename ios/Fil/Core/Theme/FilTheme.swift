@@ -1,22 +1,27 @@
 import SwiftUI
 
 enum FilTheme {
-    // MARK: - Colors
-    static let void_ = Color(hex: 0x0A0A0F)
+    // MARK: - Adaptive App Colors
+    static let void_ = Color(uiColor: .systemBackground)
     static let filGreen = Color(hex: 0x00D4AA)
-    static let surface = Color(hex: 0x1A1A2E)
-    static let cloud = Color(hex: 0xFAFAFA)
-    static let depth = Color(hex: 0x0D1117)
-    static let elevated = Color(hex: 0x161B22)
+    static let surface = Color(uiColor: .secondarySystemGroupedBackground)
+    static let cloud = Color(uiColor: .label)
+    static let depth = Color(uiColor: .secondarySystemBackground)
+    static let elevated = Color(uiColor: .tertiarySystemBackground)
     static let filDark = Color(hex: 0x00B894)
     static let filLight = Color(hex: 0x55EFC4)
-    static let error = Color(hex: 0xFF6B6B)
-    static let warning = Color(hex: 0xFECA57)
+    static let error = Color(uiColor: .systemRed)
+    static let warning = Color(uiColor: .systemOrange)
+
+    // MARK: - Terminal Colors
+    static let terminalBackground = Color(hex: 0x0A0A0F)
+    static let terminalForeground = Color(hex: 0xFAFAFA)
+    static let terminalSurface = Color(hex: 0x1A1A2E)
 
     // MARK: - Status Colors
     static let online = filGreen
     static let unreachable = warning
-    static let offline = Color(white: 0.3)
+    static let offline = Color(uiColor: .tertiaryLabel)
 }
 
 extension Color {

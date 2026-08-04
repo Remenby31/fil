@@ -22,10 +22,8 @@ impl QuicCerts {
         // Use ECDSA P-256 — compatible with iOS Network.framework
         // (Ed25519 causes NoSignatureSchemesInCommon with Apple's QUIC)
         let key_pair = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256)?;
-        let mut params = rcgen::CertificateParams::new(vec![
-            "fil-hub".to_string(),
-            "localhost".to_string(),
-        ])?;
+        let mut params =
+            rcgen::CertificateParams::new(vec!["fil-hub".to_string(), "localhost".to_string()])?;
         params.distinguished_name.push(
             rcgen::DnType::CommonName,
             rcgen::DnValue::Utf8String("fil-hub".to_string()),

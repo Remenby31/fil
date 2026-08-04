@@ -1,6 +1,7 @@
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::response::IntoResponse;
+use chrono::{DateTime, Utc};
 use futures_util::{SinkExt, StreamExt};
 use prost::Message as ProstMessage;
 use serde::Deserialize;
@@ -32,7 +33,9 @@ pub async fn ws_handler(
     match device {
         Ok(Some((device_id, user_id, device_name))) => {
             info!(device_id = %device_id, user_id = %user_id, "WebSocket connection accepted");
-            ws.on_upgrade(move |socket| handle_socket(socket, device_id, user_id, device_name, state))
+            ws.on_upgrade(move |socket| {
+                handle_socket(socket, device_id, user_id, device_name, state)
+            })
         }
         _ => {
             warn!(device_id = %params.device_id, "WebSocket connection rejected: unknown device");
@@ -41,11 +44,19 @@ pub async fn ws_handler(
     }
 }
 
-async fn handle_socket(socket: WebSocket, device_id: String, user_id: String, device_name: String, state: AppState) {
+async fn handle_socket(
+    socket: WebSocket,
+    device_id: String,
+    user_id: String,
+    device_name: String,
+    state: AppState,
+) {
     let (mut sender, mut receiver) = socket.split();
 
     // Register device as connected
-    state.sessions.register_device(&device_id, &user_id, &device_name);
+    state
+        .sessions
+        .register_device(&device_id, &user_id, &device_name);
     info!(device_id = %device_id, "device connected");
 
     // Update last_seen
@@ -100,11 +111,13 @@ async fn handle_daemon_message(
                 session_id: created.session_id.clone(),
                 device_id: device_id.to_string(),
                 shell: created.shell.clone(),
+                command: created.command.clone(),
                 cwd: created.cwd.clone(),
                 cols: created.cols,
                 rows: created.rows,
                 status: SessionStatus::Online,
-                created_at: chrono::Utc::now(),
+                created_at: DateTime::from_timestamp(created.created_at, 0)
+                    .unwrap_or_else(Utc::now),
             };
             state.sessions.add_session(device_id, session);
             debug!(
@@ -127,11 +140,12 @@ async fn handle_daemon_message(
                     session_id: s.session_id.clone(),
                     device_id: device_id.to_string(),
                     shell: s.shell.clone(),
+                    command: s.command.clone(),
                     cwd: s.cwd.clone(),
                     cols: s.cols,
                     rows: s.rows,
                     status: SessionStatus::Online,
-                    created_at: chrono::Utc::now(),
+                    created_at: DateTime::from_timestamp(s.created_at, 0).unwrap_or_else(Utc::now),
                 })
                 .collect();
             state.sessions.update_heartbeat(device_id, sessions);
@@ -150,6 +164,9 @@ async fn handle_daemon_message(
             );
         }
         proto::daemon_message::Payload::SessionResize(resize) => {
+            state
+                .sessions
+                .update_session_size(&resize.session_id, resize.cols, resize.rows);
             debug!(
                 session_id = %resize.session_id,
                 cols = resize.cols,

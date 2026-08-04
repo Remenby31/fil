@@ -2,16 +2,40 @@ use anyhow::Result;
 use quinn::{Endpoint, RecvStream, SendStream};
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
-use tracing::{debug, error, info, warn};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
+use tokio::sync::{RwLock, mpsc};
+use tracing::{debug, info, warn};
 
 use crate::quic_certs::QuicCerts;
-use crate::sessions::{SessionInfo, SessionRegistry, SessionStatus};
+use crate::sessions::SessionRegistry;
+
+const FRAME_INPUT: u8 = 0x00;
+const FRAME_RESIZE: u8 = 0x01;
+const CLIENT_FRAME_DETACH: u8 = 0x02;
+const MAX_INPUT_FRAME_BYTES: usize = 1024 * 1024;
+const QUIC_IDLE_TIMEOUT_SECS: u64 = 15;
+const QUIC_KEEP_ALIVE_SECS: u64 = 5;
 
 /// A connected client (iOS app) watching a session
 struct AttachedClient {
+    id: u64,
     sender: mpsc::Sender<Vec<u8>>,
+}
+
+pub(crate) enum DaemonCommand {
+    Input(Vec<u8>),
+    Resize { cols: u16, rows: u16 },
+    ClientAttached,
+    ClientDetached,
+}
+
+enum ClientCommand {
+    Input(Vec<u8>),
+    Resize { cols: u16, rows: u16 },
+    Detach,
 }
 
 /// Circular buffer for scrollback catch-up
@@ -22,7 +46,10 @@ struct ScrollbackBuffer {
 
 impl ScrollbackBuffer {
     fn new(max_size: usize) -> Self {
-        Self { buf: Vec::with_capacity(max_size), max_size }
+        Self {
+            buf: Vec::with_capacity(max_size),
+            max_size,
+        }
     }
 
     fn push(&mut self, data: &[u8]) {
@@ -42,10 +69,11 @@ impl ScrollbackBuffer {
 pub struct QuicRouter {
     /// session_id → list of attached clients
     clients: Arc<RwLock<HashMap<String, Vec<AttachedClient>>>>,
-    /// device_id → sender to daemon's data stream
-    daemon_inputs: Arc<RwLock<HashMap<String, mpsc::Sender<Vec<u8>>>>>,
+    /// session_id → sender to daemon's command stream
+    daemon_inputs: Arc<RwLock<HashMap<String, mpsc::Sender<DaemonCommand>>>>,
     /// session_id → scrollback buffer (last 64KB of output)
     scrollback: Arc<RwLock<HashMap<String, ScrollbackBuffer>>>,
+    next_client_id: AtomicU64,
 }
 
 impl QuicRouter {
@@ -54,6 +82,7 @@ impl QuicRouter {
             clients: Arc::new(RwLock::new(HashMap::new())),
             daemon_inputs: Arc::new(RwLock::new(HashMap::new())),
             scrollback: Arc::new(RwLock::new(HashMap::new())),
+            next_client_id: AtomicU64::new(1),
         }
     }
 
@@ -70,7 +99,9 @@ impl QuicRouter {
         let clients = self.clients.read().await;
         if let Some(senders) = clients.get(session_id) {
             for client in senders {
-                client.sender.send(data.to_vec()).await.ok();
+                // Remote delivery is best-effort. A slow phone must never
+                // stall the daemon stream (and indirectly the local PTY).
+                client.sender.try_send(data.to_vec()).ok();
             }
         }
     }
@@ -78,15 +109,22 @@ impl QuicRouter {
     pub async fn attach_client(
         &self,
         session_id: &str,
-    ) -> (mpsc::Receiver<Vec<u8>>, Vec<u8>) {
+    ) -> (u64, bool, mpsc::Receiver<Vec<u8>>, Vec<u8>) {
         let (tx, rx) = mpsc::channel(512);
-        let mut clients = self.clients.write().await;
-        clients
-            .entry(session_id.to_string())
-            .or_default()
-            .push(AttachedClient { sender: tx });
+        let client_id = self.next_client_id.fetch_add(1, Ordering::Relaxed);
+        let first_client = {
+            let mut clients = self.clients.write().await;
+            let attached = clients.entry(session_id.to_string()).or_default();
+            let first_client = attached.is_empty();
+            attached.push(AttachedClient {
+                id: client_id,
+                sender: tx,
+            });
+            first_client
+        };
 
-        // Get scrollback snapshot for catch-up
+        // Do not hold the clients lock while taking the scrollback lock:
+        // forward_to_clients takes them in the opposite order.
         let scrollback = self.scrollback.read().await;
         let catchup = scrollback
             .get(session_id)
@@ -94,19 +132,28 @@ impl QuicRouter {
             .unwrap_or_default();
 
         info!(session_id = %session_id, catchup_bytes = catchup.len(), "client attached to session");
-        (rx, catchup)
+        (client_id, first_client, rx, catchup)
     }
 
-    pub async fn detach_clients(&self, session_id: &str) {
+    /// Detach one client and report whether it was the final client for the session.
+    pub async fn detach_client(&self, session_id: &str, client_id: u64) -> bool {
         let mut clients = self.clients.write().await;
-        clients.remove(session_id);
+        let mut detached_last_client = false;
+
+        if let Some(attached) = clients.get_mut(session_id) {
+            let previous_len = attached.len();
+            attached.retain(|client| client.id != client_id);
+            detached_last_client = attached.len() != previous_len && attached.is_empty();
+        }
+
+        if detached_last_client {
+            clients.remove(session_id);
+        }
+
+        detached_last_client
     }
 
-    pub async fn register_daemon_input(
-        &self,
-        session_id: &str,
-        tx: mpsc::Sender<Vec<u8>>,
-    ) {
+    pub async fn register_daemon_input(&self, session_id: &str, tx: mpsc::Sender<DaemonCommand>) {
         let mut inputs = self.daemon_inputs.write().await;
         inputs.insert(session_id.to_string(), tx);
     }
@@ -114,13 +161,34 @@ impl QuicRouter {
     pub async fn send_to_daemon(&self, session_id: &str, data: &[u8]) {
         let inputs = self.daemon_inputs.read().await;
         if let Some(tx) = inputs.get(session_id) {
-            tx.send(data.to_vec()).await.ok();
+            tx.send(DaemonCommand::Input(data.to_vec())).await.ok();
+        }
+    }
+
+    pub async fn resize_daemon(&self, session_id: &str, cols: u16, rows: u16) {
+        let inputs = self.daemon_inputs.read().await;
+        if let Some(tx) = inputs.get(session_id) {
+            tx.send(DaemonCommand::Resize { cols, rows }).await.ok();
         }
     }
 
     pub async fn unregister_daemon(&self, session_id: &str) {
         let mut inputs = self.daemon_inputs.write().await;
         inputs.remove(session_id);
+    }
+
+    pub async fn notify_daemon_client_attached(&self, session_id: &str) {
+        let inputs = self.daemon_inputs.read().await;
+        if let Some(tx) = inputs.get(session_id) {
+            tx.send(DaemonCommand::ClientAttached).await.ok();
+        }
+    }
+
+    pub async fn notify_daemon_client_detached(&self, session_id: &str) {
+        let inputs = self.daemon_inputs.read().await;
+        if let Some(tx) = inputs.get(session_id) {
+            tx.send(DaemonCommand::ClientDetached).await.ok();
+        }
     }
 }
 
@@ -139,9 +207,17 @@ pub async fn start_quic_server(
 
     server_crypto.alpn_protocols = vec![b"fil".to_vec()];
 
-    let server_config = quinn::ServerConfig::with_crypto(Arc::new(
+    let mut transport = quinn::TransportConfig::default();
+    transport.max_idle_timeout(Some(
+        quinn::IdleTimeout::try_from(std::time::Duration::from_secs(QUIC_IDLE_TIMEOUT_SECS))
+            .unwrap(),
+    ));
+    transport.keep_alive_interval(Some(std::time::Duration::from_secs(QUIC_KEEP_ALIVE_SECS)));
+
+    let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(
         quinn::crypto::rustls::QuicServerConfig::try_from(server_crypto)?,
     ));
+    server_config.transport_config(Arc::new(transport));
 
     let endpoint = Endpoint::server(server_config, addr)?;
     info!(addr = %addr, "QUIC server listening");
@@ -222,7 +298,7 @@ async fn handle_stream(
             debug!(session_id = %session_id, "daemon data stream opened");
 
             // Register daemon input channel
-            let (input_tx, mut input_rx) = mpsc::channel::<Vec<u8>>(256);
+            let (input_tx, mut input_rx) = mpsc::channel::<DaemonCommand>(256);
             router.register_daemon_input(&session_id, input_tx).await;
 
             // Bidirectional: read PTY output, write client input
@@ -245,8 +321,8 @@ async fn handle_stream(
 
             // Forward client input to daemon
             let write_task = async {
-                while let Some(data) = input_rx.recv().await {
-                    if send.write_all(&data).await.is_err() {
+                while let Some(command) = input_rx.recv().await {
+                    if write_daemon_command(&mut send, command).await.is_err() {
                         break;
                     }
                 }
@@ -262,7 +338,8 @@ async fn handle_stream(
         }
 
         // 0x02 = Client attach (iOS app watching a session)
-        // After session_id: optional 4 bytes for terminal size (cols u16 + rows u16)
+        // After the session id, client->hub data is framed:
+        // 0x00 + u32 length + bytes for input, or 0x01 + u16 cols + u16 rows.
         0x02 => {
             // Read session_id
             let mut len_buf = [0u8; 2];
@@ -275,47 +352,66 @@ async fn handle_stream(
             debug!(session_id = %session_id, "client attached to session");
 
             // Subscribe to session output + get scrollback catch-up
-            let (mut output_rx, catchup) = router.attach_client(&session_id).await;
+            let (client_id, first_client, mut output_rx, catchup) =
+                router.attach_client(&session_id).await;
 
-            // Send scrollback catch-up first
-            if !catchup.is_empty() {
-                if send.write_all(&catchup).await.is_err() {
-                    return Ok(());
-                }
+            if first_client {
+                router.notify_daemon_client_attached(&session_id).await;
             }
 
-            // Forward output to client
-            let send_task = async move {
-                while let Some(data) = output_rx.recv().await {
-                    if send.write_all(&data).await.is_err() {
-                        break;
-                    }
+            // Keep cleanup outside the stream body so every exit path,
+            // including a catch-up write failure, emits the detach transition.
+            let stream_result: Result<()> = async {
+                if !catchup.is_empty() {
+                    send.write_all(&catchup).await?;
                 }
-            };
 
-            // Forward client input to daemon
-            let router_input = router.clone();
-            let sid_input = session_id.clone();
-            let recv_task = async move {
-                let mut buf = vec![0u8; 4096];
-                loop {
-                    match recv.read(&mut buf).await {
-                        Ok(Some(n)) => {
-                            router_input.send_to_daemon(&sid_input, &buf[..n]).await;
+                // Forward output to client
+                let send_task = async move {
+                    while let Some(data) = output_rx.recv().await {
+                        if send.write_all(&data).await.is_err() {
+                            break;
                         }
-                        Ok(None) => break,
-                        Err(_) => break,
                     }
+                };
+
+                // Forward client input to daemon
+                let router_input = router.clone();
+                let sid_input = session_id.clone();
+                let sessions_input = sessions.clone();
+                let recv_task = async move {
+                    loop {
+                        match read_client_command(&mut recv).await {
+                            Ok(Some(ClientCommand::Input(data))) => {
+                                router_input.send_to_daemon(&sid_input, &data).await;
+                            }
+                            Ok(Some(ClientCommand::Resize { cols, rows })) => {
+                                sessions_input.update_session_size(
+                                    &sid_input,
+                                    u32::from(cols),
+                                    u32::from(rows),
+                                );
+                                router_input.resize_daemon(&sid_input, cols, rows).await;
+                            }
+                            Ok(Some(ClientCommand::Detach)) | Ok(None) | Err(_) => break,
+                        }
+                    }
+                };
+
+                tokio::select! {
+                    _ = send_task => {},
+                    _ = recv_task => {},
                 }
-            };
 
-            tokio::select! {
-                _ = send_task => {},
-                _ = recv_task => {},
+                Ok(())
             }
+            .await;
 
-            router.detach_clients(&session_id).await;
+            if router.detach_client(&session_id, client_id).await {
+                router.notify_daemon_client_detached(&session_id).await;
+            }
             debug!(session_id = %session_id, "client detached");
+            stream_result?;
         }
 
         other => {
@@ -324,4 +420,95 @@ async fn handle_stream(
     }
 
     Ok(())
+}
+
+const FRAME_CLIENT_ATTACHED: u8 = 0x02;
+const FRAME_CLIENT_DETACHED: u8 = 0x03;
+
+async fn write_daemon_command(send: &mut SendStream, command: DaemonCommand) -> Result<()> {
+    match command {
+        DaemonCommand::Input(data) => {
+            send.write_all(&[FRAME_INPUT]).await?;
+            send.write_all(&(data.len() as u32).to_be_bytes()).await?;
+            send.write_all(&data).await?;
+        }
+        DaemonCommand::Resize { cols, rows } => {
+            send.write_all(&[FRAME_RESIZE]).await?;
+            send.write_all(&cols.to_be_bytes()).await?;
+            send.write_all(&rows.to_be_bytes()).await?;
+        }
+        DaemonCommand::ClientAttached => {
+            send.write_all(&[FRAME_CLIENT_ATTACHED]).await?;
+        }
+        DaemonCommand::ClientDetached => {
+            send.write_all(&[FRAME_CLIENT_DETACHED]).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn read_client_command(recv: &mut RecvStream) -> Result<Option<ClientCommand>> {
+    let mut frame_type = [0u8; 1];
+    if !read_exact_or_eof(recv, &mut frame_type).await? {
+        return Ok(None);
+    }
+
+    match frame_type[0] {
+        FRAME_INPUT => {
+            let mut len_buf = [0u8; 4];
+            if !read_exact_or_eof(recv, &mut len_buf).await? {
+                return Ok(None);
+            }
+            let len = u32::from_be_bytes(len_buf) as usize;
+            if len > MAX_INPUT_FRAME_BYTES {
+                anyhow::bail!("input frame too large: {len} bytes");
+            }
+            let mut data = vec![0u8; len];
+            if len > 0 && !read_exact_or_eof(recv, &mut data).await? {
+                return Ok(None);
+            }
+            Ok(Some(ClientCommand::Input(data)))
+        }
+        FRAME_RESIZE => {
+            let mut size_buf = [0u8; 4];
+            if !read_exact_or_eof(recv, &mut size_buf).await? {
+                return Ok(None);
+            }
+            let cols = u16::from_be_bytes([size_buf[0], size_buf[1]]);
+            let rows = u16::from_be_bytes([size_buf[2], size_buf[3]]);
+            Ok(Some(ClientCommand::Resize { cols, rows }))
+        }
+        CLIENT_FRAME_DETACH => Ok(Some(ClientCommand::Detach)),
+        other => anyhow::bail!("unknown client frame type: {other}"),
+    }
+}
+
+async fn read_exact_or_eof(recv: &mut RecvStream, buf: &mut [u8]) -> Result<bool> {
+    let mut offset = 0;
+    while offset < buf.len() {
+        match recv.read(&mut buf[offset..]).await? {
+            Some(0) | None => return Ok(false),
+            Some(n) => offset += n,
+        }
+    }
+    Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn only_the_final_client_detach_closes_the_remote_attachment() {
+        let router = QuicRouter::new();
+
+        let (first_id, first_for_session, _first_rx, _) = router.attach_client("session").await;
+        let (second_id, second_for_session, _second_rx, _) = router.attach_client("session").await;
+
+        assert!(first_for_session);
+        assert!(!second_for_session);
+        assert!(!router.detach_client("session", first_id).await);
+        assert!(router.detach_client("session", second_id).await);
+        assert!(!router.detach_client("session", second_id).await);
+    }
 }

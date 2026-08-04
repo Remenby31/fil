@@ -1,9 +1,9 @@
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::Json;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 use tracing::debug;
+use uuid::Uuid;
 
 use crate::auth::AuthUser;
 use crate::state::AppState;
@@ -31,9 +31,7 @@ pub async fn register_device(
 ) -> Result<(StatusCode, Json<DeviceResponse>), StatusCode> {
     let device_id = Uuid::new_v4().to_string();
 
-    sqlx::query(
-        "INSERT INTO devices (id, user_id, name, os, hostname) VALUES (?, ?, ?, ?, ?)"
-    )
+    sqlx::query("INSERT INTO devices (id, user_id, name, os, hostname) VALUES (?, ?, ?, ?, ?)")
         .bind(&device_id)
         .bind(&auth.user_id)
         .bind(&req.name)
@@ -88,9 +86,7 @@ pub async fn delete_device(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
 ) -> StatusCode {
-    let result = sqlx::query(
-        "DELETE FROM devices WHERE id = ? AND user_id = ?"
-    )
+    let result = sqlx::query("DELETE FROM devices WHERE id = ? AND user_id = ?")
         .bind(&device_id)
         .bind(&auth.user_id)
         .execute(&state.db.pool)

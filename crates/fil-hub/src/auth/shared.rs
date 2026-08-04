@@ -11,20 +11,8 @@ pub async fn find_or_create_user(
     email: Option<&str>,
     display_name: &str,
 ) -> String {
-    // 1. Check by exact provider match
-    if let Ok(Some(id)) = sqlx::query_scalar::<_, String>(
-        "SELECT id FROM users WHERE provider = ? AND provider_id = ?",
-    )
-    .bind(provider)
-    .bind(provider_id)
-    .fetch_optional(pool)
-    .await
-    {
-        debug!(user_id = %id, provider, "existing user found");
-        return id;
-    }
-
-    // 2. Check user_links table
+    // 1. Prefer an explicit provider link. This must run before the exact
+    // users lookup because linked identities can predate account merging.
     if let Ok(Some(id)) = sqlx::query_scalar::<_, String>(
         "SELECT user_id FROM user_links WHERE provider = ? AND provider_id = ?",
     )
@@ -34,6 +22,19 @@ pub async fn find_or_create_user(
     .await
     {
         debug!(user_id = %id, provider, "user found via link");
+        return id;
+    }
+
+    // 2. Check by exact provider match
+    if let Ok(Some(id)) = sqlx::query_scalar::<_, String>(
+        "SELECT id FROM users WHERE provider = ? AND provider_id = ?",
+    )
+    .bind(provider)
+    .bind(provider_id)
+    .fetch_optional(pool)
+    .await
+    {
+        debug!(user_id = %id, provider, "existing user found");
         return id;
     }
 

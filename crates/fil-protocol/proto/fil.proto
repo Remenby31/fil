@@ -25,6 +25,7 @@ message SessionCreated {
     int64 created_at = 5;
     uint32 cols = 6;
     uint32 rows = 7;
+    string command = 8;
 }
 
 message SessionDestroyed {
@@ -60,6 +61,7 @@ message SessionInfo {
     int64 created_at = 4;
     uint32 cols = 5;
     uint32 rows = 6;
+    string command = 7;
 }
 
 message Heartbeat {

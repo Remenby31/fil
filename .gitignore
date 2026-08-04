@@ -19,6 +19,7 @@ Cargo.lock
 # iOS build artifacts
 ios/build/
 ios/DerivedData/
+ios/DerivedData-*/
 *.xcarchive
 *.ipa
 
@@ -38,3 +39,11 @@ web/dist/
 # Environment
 .env
 .env.local
+
+# QUIC dev certificate + private key (regenerated at runtime by quic_certs.rs)
+quic-cert.der
+quic-key.der
+
+# Agent tooling
+.agents/
+.xcodebuildmcp/

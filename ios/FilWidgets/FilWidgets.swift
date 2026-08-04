@@ -1,176 +1,185 @@
 import SwiftUI
 import WidgetKit
 
-// MARK: - Timeline Provider
-
 struct FilWidgetProvider: TimelineProvider {
     func placeholder(in context: Context) -> FilWidgetEntry {
-        FilWidgetEntry.placeholder
+        .placeholder
     }
 
     func getSnapshot(in context: Context, completion: @escaping (FilWidgetEntry) -> Void) {
-        completion(.placeholder)
+        completion(context.isPreview ? .placeholder : .current)
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<FilWidgetEntry>) -> Void) {
-        // TODO: Fetch real session data from shared app group
-        let entry = FilWidgetEntry(
-            date: Date(),
-            machines: [
-                WidgetMachine(name: "Mac mini", status: .online, sessionCount: 3),
-                WidgetMachine(name: "MacBook Pro", status: .offline, sessionCount: 0),
-            ]
-        )
-
-        let nextUpdate = Calendar.current.date(byAdding: .minute, value: 5, to: Date())!
-        let timeline = Timeline(entries: [entry], policy: .after(nextUpdate))
-        completion(timeline)
+        let entry = FilWidgetEntry.current
+        let refresh = Calendar.current.date(byAdding: .minute, value: 15, to: Date())
+            ?? Date().addingTimeInterval(900)
+        completion(Timeline(entries: [entry], policy: .after(refresh)))
     }
 }
 
-// MARK: - Entry
-
 struct FilWidgetEntry: TimelineEntry {
     let date: Date
-    let machines: [WidgetMachine]
+    let snapshot: FilWidgetSnapshot?
 
-    var totalSessions: Int {
-        machines.reduce(0) { $0 + $1.sessionCount }
-    }
-
-    var onlineMachines: Int {
-        machines.filter { $0.status == .online }.count
+    static var current: Self {
+        .init(date: Date(), snapshot: FilSharedStore.loadWidgetSnapshot())
     }
 
     static let placeholder = FilWidgetEntry(
         date: Date(),
-        machines: [
-            WidgetMachine(name: "Mac mini", status: .online, sessionCount: 2),
-        ]
+        snapshot: FilWidgetSnapshot(
+            machines: [
+                FilWidgetMachineSnapshot(
+                    id: "preview-machine",
+                    name: "MacBook Pro",
+                    isConnected: true,
+                    sessions: [
+                        FilWidgetSessionSnapshot(
+                            id: "preview-session",
+                            projectName: "cerebro-map",
+                            processName: "Codex",
+                            machineName: "MacBook Pro"
+                        )
+                    ]
+                )
+            ]
+        )
     )
 }
 
-struct WidgetMachine: Identifiable {
-    let id = UUID()
-    let name: String
-    let status: WidgetMachineStatus
-    let sessionCount: Int
+private enum FilWidgetColors {
+    static let accent = Color(red: 0, green: 0.83, blue: 0.67)
+    static let background = Color(red: 0.039, green: 0.039, blue: 0.059)
 }
 
-enum WidgetMachineStatus {
-    case online, offline
+private struct FilWidgetMark: View {
+    var body: some View {
+        HStack(spacing: 0) {
+            Text("fil")
+                .foregroundStyle(.primary)
+            Text(".sh")
+                .foregroundStyle(FilWidgetColors.accent)
+        }
+        .font(.headline.weight(.medium))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Fil")
+    }
 }
-
-// MARK: - Small Widget
 
 struct FilWidgetSmall: View {
     let entry: FilWidgetEntry
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("fil.")
-                .font(.system(size: 18, weight: .light))
-                .foregroundStyle(.white)
+            FilWidgetMark()
 
             Spacer()
 
-            HStack(spacing: 4) {
-                Circle()
-                    .fill(Color(red: 0, green: 0.83, blue: 0.67))
-                    .frame(width: 6, height: 6)
+            if let snapshot = entry.snapshot {
+                Text("\(snapshot.activeSessions.count)")
+                    .font(.system(.largeTitle, design: .rounded, weight: .semibold))
+                    .monospacedDigit()
 
-                Text("\(entry.totalSessions)")
-                    .font(.system(size: 28, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(.white)
+                Text(
+                    snapshot.activeSessions.count == 1
+                        ? String(localized: "active terminal")
+                        : String(localized: "active terminals")
+                )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if let session = snapshot.activeSessions.first {
+                    Text(session.projectName)
+                        .font(.caption.weight(.medium))
+                        .lineLimit(1)
+                }
+            } else {
+                Text("Open Fil")
+                    .font(.headline)
+                Text("to sync your terminals")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-
-            Text(entry.totalSessions == 1 ? "session" : "sessions")
-                .font(.system(size: 12))
-                .foregroundStyle(.white.opacity(0.5))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .containerBackground(for: .widget) {
-            Color(red: 0.039, green: 0.039, blue: 0.059)
+            FilWidgetColors.background
         }
     }
 }
-
-// MARK: - Medium Widget
 
 struct FilWidgetMedium: View {
     let entry: FilWidgetEntry
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("fil.")
-                    .font(.system(size: 16, weight: .light))
-                    .foregroundStyle(.white)
-
+                FilWidgetMark()
                 Spacer()
-
-                Text("\(entry.onlineMachines) online")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.white.opacity(0.4))
+                if let snapshot = entry.snapshot {
+                    Text("\(snapshot.connectedMachineCount) connected")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             }
 
-            ForEach(entry.machines) { machine in
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(machine.status == .online
-                              ? Color(red: 0, green: 0.83, blue: 0.67)
-                              : Color.white.opacity(0.2))
-                        .frame(width: 6, height: 6)
+            if let snapshot = entry.snapshot, !snapshot.activeSessions.isEmpty {
+                ForEach(Array(snapshot.activeSessions.prefix(3))) { session in
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(FilWidgetColors.accent)
+                            .frame(width: 6, height: 6)
 
-                    Text(machine.name)
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(.white)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(session.projectName)
+                                .font(.caption.weight(.semibold))
+                                .lineLimit(1)
+                            Text("\(session.processName) · \(session.machineName)")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
 
-                    Spacer()
-
-                    if machine.sessionCount > 0 {
-                        Text("\(machine.sessionCount) sessions")
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundStyle(.white.opacity(0.4))
-                    } else {
-                        Text("offline")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.white.opacity(0.25))
+                        Spacer(minLength: 4)
                     }
                 }
-                .padding(.vertical, 2)
+            } else {
+                ContentUnavailableView(
+                    "No Active Terminals",
+                    systemImage: "terminal",
+                    description: Text("Open Fil to refresh")
+                )
             }
+
+            Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .containerBackground(for: .widget) {
-            Color(red: 0.039, green: 0.039, blue: 0.059)
+            FilWidgetColors.background
         }
     }
 }
 
-// MARK: - Widget Configuration
-
 struct FilWidget: Widget {
-    let kind: String = "FilWidget"
+    let kind = "FilWidget"
 
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: kind, provider: FilWidgetProvider()) { entry in
             FilWidgetEntryView(entry: entry)
         }
-        .configurationDisplayName("Fil")
-        .description("See your active terminal sessions.")
+        .configurationDisplayName("Fil Terminals")
+        .description("See the terminal sessions that are active right now.")
         .supportedFamilies([.systemSmall, .systemMedium])
     }
 }
 
 struct FilWidgetEntryView: View {
-    @Environment(\.widgetFamily) var family
+    @Environment(\.widgetFamily) private var family
     let entry: FilWidgetEntry
 
     var body: some View {
         switch family {
-        case .systemSmall:
-            FilWidgetSmall(entry: entry)
         case .systemMedium:
             FilWidgetMedium(entry: entry)
         default:
@@ -178,8 +187,6 @@ struct FilWidgetEntryView: View {
         }
     }
 }
-
-// MARK: - Widget Bundle
 
 @main
 struct FilWidgetBundle: WidgetBundle {

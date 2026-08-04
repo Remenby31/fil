@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/fil-protocol",
+    "crates/fil-proxy",
     "crates/fil-daemon",
     "crates/fil-hub",
 ]

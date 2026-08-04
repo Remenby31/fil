@@ -19,22 +19,46 @@ struct AppView: View {
             }
         }
         .onOpenURL { url in
-            // Deep link: fil://session/{sessionId}
-            guard url.scheme == "fil",
-                  url.host == "session",
-                  let sessionId = url.pathComponents.last else { return }
-            // TODO: navigate to specific session via store action
-            _ = sessionId
+            store.send(.openURL(url))
         }
         .fullScreenCover(isPresented: $showOnboarding) {
-            OnboardingView(isPresented: $showOnboarding)
-        }
-        .onAppear {
-            let hasSeenOnboarding = UserDefaults.standard.bool(forKey: "hasSeenOnboarding")
-            if !hasSeenOnboarding {
-                showOnboarding = true
+            OnboardingView(isPresented: $showOnboarding) {
                 UserDefaults.standard.set(true, forKey: "hasSeenOnboarding")
             }
         }
+        .onAppear {
+            if let url = FilSharedStore.takePendingActivityURL() {
+                store.send(.openURL(url))
+            }
+            presentOnboardingIfNeeded()
+        }
+        .onChange(of: isShowingMainApp) { _, isMain in
+            if isMain { presentOnboardingIfNeeded() }
+        }
+        .task {
+            await migrateLegacyLiveActivitiesIfNeeded()
+        }
+    }
+
+    private var isShowingMainApp: Bool {
+        if case .main = store.state { return true }
+        return false
+    }
+
+    private func presentOnboardingIfNeeded() {
+        guard isShowingMainApp,
+              !UserDefaults.standard.bool(forKey: "hasSeenOnboarding") else {
+            return
+        }
+        showOnboarding = true
+    }
+
+    private func migrateLegacyLiveActivitiesIfNeeded() async {
+        let migrationKey = "didMigrateToExplicitLiveActivities"
+        guard !UserDefaults.standard.bool(forKey: migrationKey) else { return }
+        if #available(iOS 16.2, *) {
+            await FilActivityManager.shared.endAllImmediately()
+        }
+        UserDefaults.standard.set(true, forKey: migrationKey)
     }
 }

@@ -67,10 +67,9 @@ impl NoiseInitiator {
     }
 
     pub fn into_transport(mut self) -> NoiseTransport {
-        let InitiatorState::Handshake(hs) = std::mem::replace(
-            &mut self.state,
-            InitiatorState::Transitioning,
-        ) else {
+        let InitiatorState::Handshake(hs) =
+            std::mem::replace(&mut self.state, InitiatorState::Transitioning)
+        else {
             panic!("not in handshake state");
         };
         let transport = hs.into_transport_mode().unwrap();
@@ -129,10 +128,9 @@ impl NoiseResponder {
     }
 
     pub fn into_transport(mut self) -> NoiseTransport {
-        let ResponderState::Handshake(hs) = std::mem::replace(
-            &mut self.state,
-            ResponderState::Transitioning,
-        ) else {
+        let ResponderState::Handshake(hs) =
+            std::mem::replace(&mut self.state, ResponderState::Transitioning)
+        else {
             panic!("not in handshake state");
         };
         let transport = hs.into_transport_mode().unwrap();

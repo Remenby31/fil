@@ -1,4 +1,6 @@
+mod apns;
 mod auth;
+mod client_ws;
 mod config;
 mod db;
 mod quic;
@@ -8,12 +10,12 @@ mod sessions;
 mod state;
 mod ws;
 
-use axum::routing::{delete, get, post};
 use axum::Router;
+use axum::routing::{delete, get, post};
+use std::net::SocketAddr;
 use tokio::signal;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
-use std::net::SocketAddr;
 use tracing::{error, info};
 
 use crate::config::Config;
@@ -33,10 +35,22 @@ async fn main() -> anyhow::Result<()> {
     let quic_port = config.quic_port;
     let data_dir = config.data_dir.clone();
 
-    info!("fil-hub v{} — starting on {}", env!("CARGO_PKG_VERSION"), addr);
+    info!(
+        "fil-hub v{} — starting on {}",
+        env!("CARGO_PKG_VERSION"),
+        addr
+    );
 
     let state = AppState::new(config).await?;
     let quic_sessions = state.sessions.clone();
+    let mut activity_updates = state.sessions.subscribe();
+    let activity_db = state.db.pool.clone();
+    let activity_apns = state.apns.clone();
+    tokio::spawn(async move {
+        while let Ok(update) = activity_updates.recv().await {
+            activity_apns.deliver_update(&activity_db, &update).await;
+        }
+    });
 
     let app = Router::new()
         // Public routes
@@ -48,9 +62,16 @@ async fn main() -> anyhow::Result<()> {
         .route("/devices", post(routes::register_device))
         .route("/devices", get(routes::list_devices))
         .route("/devices/{device_id}", delete(routes::delete_device))
+        .route("/account", delete(routes::delete_account))
         .route("/sessions", get(routes::list_sessions))
-        // WebSocket for daemon connections
+        .route("/live-activities", post(routes::register_live_activity))
+        .route(
+            "/live-activities/{activity_id}",
+            delete(routes::delete_live_activity),
+        )
+        // WebSockets for daemon and authenticated iOS clients
         .route("/ws", get(ws::ws_handler))
+        .route("/ws/client", get(client_ws::client_ws_handler))
         // Middleware
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive())

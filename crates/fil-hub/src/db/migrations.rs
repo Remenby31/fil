@@ -72,5 +72,31 @@ pub async fn run(pool: &SqlitePool) -> Result<()> {
         .execute(pool)
         .await?;
 
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS live_activities (
+            activity_id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            session_id TEXT NOT NULL,
+            device_id TEXT NOT NULL,
+            push_token TEXT NOT NULL UNIQUE,
+            environment TEXT NOT NULL CHECK(environment IN ('sandbox', 'production')),
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_live_activities_user_id ON live_activities(user_id)",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_live_activities_session_id ON live_activities(session_id)",
+    )
+    .execute(pool)
+    .await?;
+    debug!("table 'live_activities' ready");
+
     Ok(())
 }

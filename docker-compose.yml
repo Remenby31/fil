@@ -6,6 +6,7 @@ services:
       - "16433:16433/udp"
     volumes:
       - fil-data:/data
+      - ${APNS_PRIVATE_KEY_HOST_PATH:-./secrets/AuthKey.p8}:/run/secrets/apns_key:ro
     environment:
       - PORT=3100
       - DATABASE_URL=sqlite:/data/fil-hub.db?mode=rwc
@@ -15,6 +16,10 @@ services:
       - PUBLIC_URL=${PUBLIC_URL:-http://localhost:3100}
       - QUIC_PORT=${QUIC_PORT:-16433}
       - DATA_DIR=/data
+      - APNS_TEAM_ID=${APNS_TEAM_ID:-}
+      - APNS_KEY_ID=${APNS_KEY_ID:-}
+      - APNS_TOPIC=${APNS_TOPIC:-sh.fil.app}
+      - APNS_PRIVATE_KEY_PATH=${APNS_PRIVATE_KEY_PATH:-}
     restart: unless-stopped
 
 volumes:

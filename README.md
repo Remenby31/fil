@@ -56,6 +56,18 @@ docker run -d -p 3100:3100 \
   fil/hub
 ```
 
+ActivityKit updates continue locally without APNs. To keep Live Activities current while the app is suspended, mount an Apple APNs `.p8` provider key as a Docker secret and configure:
+
+```bash
+-e APNS_TEAM_ID=3SNT64YKAS \
+-e APNS_KEY_ID=YOUR_KEY_ID \
+-e APNS_TOPIC=sh.fil.app \
+-e APNS_PRIVATE_KEY_PATH=/run/secrets/apns_key \
+-v /secure/AuthKey.p8:/run/secrets/apns_key:ro
+```
+
+Never commit or bake the `.p8` key into the image. `APNS_PRIVATE_KEY` is also supported for secret managers that inject multiline environment values.
+
 ### Development
 
 ```bash

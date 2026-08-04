@@ -1,0 +1,25 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "active terminal" : { "localizations" : { "fr" : { "stringUnit" : { "state" : "translated", "value" : "terminal actif" } } } },
+    "active terminals" : { "localizations" : { "fr" : { "stringUnit" : { "state" : "translated", "value" : "terminaux actifs" } } } },
+    "Connected" : { "localizations" : { "fr" : { "stringUnit" : { "state" : "translated", "value" : "Connecté" } } } },
+    "Detailed" : { "localizations" : { "fr" : { "stringUnit" : { "state" : "translated", "value" : "Détaillée" } } } },
+    "Fil Terminals" : { "localizations" : { "fr" : { "stringUnit" : { "state" : "translated", "value" : "Terminaux Fil" } } } },
+    "No Active Terminals" : { "localizations" : { "fr" : { "stringUnit" : { "state" : "translated", "value" : "Aucun terminal actif" } } } },
+    "Active terminal" : { "localizations" : { "fr" : { "stringUnit" : { "state" : "translated", "value" : "Terminal actif" } } } },
+    "Last seen" : { "localizations" : { "fr" : { "stringUnit" : { "state" : "translated", "value" : "Dernière activité" } } } },
+    "Open Fil" : { "localizations" : { "fr" : { "stringUnit" : { "state" : "translated", "value" : "Ouvrez Fil" } } } },
+    "Open terminal" : { "localizations" : { "fr" : { "stringUnit" : { "state" : "translated", "value" : "Ouvrir le terminal" } } } },
+    "other" : { "localizations" : { "fr" : { "stringUnit" : { "state" : "translated", "value" : "autre" } } } },
+    "others" : { "localizations" : { "fr" : { "stringUnit" : { "state" : "translated", "value" : "autres" } } } },
+    "Open Fil to refresh" : { "localizations" : { "fr" : { "stringUnit" : { "state" : "translated", "value" : "Ouvrez Fil pour actualiser" } } } },
+    "Reconnecting…" : { "localizations" : { "fr" : { "stringUnit" : { "state" : "translated", "value" : "Reconnexion…" } } } },
+    "Private" : { "localizations" : { "fr" : { "stringUnit" : { "state" : "translated", "value" : "Privée" } } } },
+    "Session ended" : { "localizations" : { "fr" : { "stringUnit" : { "state" : "translated", "value" : "Session terminée" } } } },
+    "Stop following" : { "localizations" : { "fr" : { "stringUnit" : { "state" : "translated", "value" : "Arrêter le suivi" } } } },
+    "Standard" : { "localizations" : { "fr" : { "stringUnit" : { "state" : "translated", "value" : "Standard" } } } },
+    "to sync your terminals" : { "localizations" : { "fr" : { "stringUnit" : { "state" : "translated", "value" : "pour synchroniser vos terminaux" } } } }
+  },
+  "version" : "1.0"
+}
