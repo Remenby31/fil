@@ -64,6 +64,10 @@ enum TokenStorage {
         SecItemDelete(query as CFDictionary)
         var addQuery = query
         addQuery[kSecValueData as String] = data
+        // Default is WhenUnlocked, so anything reading the token before the
+        // user first unlocks the device -- a push-launched refresh, a
+        // Live Activity update -- gets nil and looks logged out.
+        addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
         SecItemAdd(addQuery as CFDictionary, nil)
     }
 

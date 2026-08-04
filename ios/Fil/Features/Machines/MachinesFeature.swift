@@ -16,6 +16,7 @@ struct MachinesFeature {
     enum Action {
         case onAppear
         case onDisappear
+        case didBecomeActive
         case refreshTapped
         case sessionsLoaded(Result<[Machine], Error>)
         case liveStatesReceived([DeviceState])
@@ -35,28 +36,26 @@ struct MachinesFeature {
             switch action {
             case .onAppear:
                 state.isLoading = state.machines.isEmpty
-                return .merge(
-                    loadMachines(),
-                    .run { send in
-                        for await result in sessionEvents.updates() {
-                            switch result {
-                            case .success(let states):
-                                await send(.liveStatesReceived(states))
-                            case .failure:
-                                await send(.liveStreamFailed)
-                            }
-                        }
-                    }
-                    .cancellable(id: CancelID.events, cancelInFlight: true)
-                )
+                return .merge(loadMachines(), startEventStream())
 
             case .onDisappear:
                 return .cancel(id: CancelID.events)
 
+            case .didBecomeActive:
+                // iOS tears down URLSession websockets while suspended, and
+                // the stream also finishes for good if the Keychain was locked
+                // when it started. Restarting it here is what stops the list
+                // from silently going stale after a background trip.
+                state.errorMessage = nil
+                return .merge(loadMachines(), startEventStream())
+
             case .refreshTapped:
                 state.isLoading = state.machines.isEmpty
                 state.errorMessage = nil
-                return loadMachines()
+                // Refresh used to reload the list and clear the "Hub
+                // unreachable" banner while leaving a dead event stream in
+                // place, so the UI looked healthy and stopped updating.
+                return .merge(loadMachines(), startEventStream())
 
             case .sessionsLoaded(.success(let machines)):
                 state.isLoading = false
@@ -87,6 +86,14 @@ struct MachinesFeature {
                 let wasResolved = state.machines
                     .flatMap(\.activeSessions)
                     .contains { $0.id == sessionId }
+                // Mark the refresh as in flight BEFORE resolving. Otherwise
+                // resolvePendingSession sees an unknown id with isLoading
+                // false, gives up, and shows "no longer available" a beat
+                // before the refresh it is about to trigger can answer --
+                // which is what a Live Activity deep link hit every time.
+                if !wasResolved {
+                    state.isLoading = true
+                }
                 _ = resolvePendingSession(&state)
                 return wasResolved ? .none : loadMachines()
 
@@ -122,6 +129,22 @@ struct MachinesFeature {
     }
 
     private enum CancelID { case events }
+
+    /// `cancelInFlight` makes this safe to call repeatedly: a second start
+    /// replaces the first rather than running two streams.
+    private func startEventStream() -> Effect<Action> {
+        .run { send in
+            for await result in sessionEvents.updates() {
+                switch result {
+                case .success(let states):
+                    await send(.liveStatesReceived(states))
+                case .failure:
+                    await send(.liveStreamFailed)
+                }
+            }
+        }
+        .cancellable(id: CancelID.events, cancelInFlight: true)
+    }
 
     private func loadMachines() -> Effect<Action> {
         .run { send in
