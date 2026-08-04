@@ -194,15 +194,17 @@ struct TerminalSessionView: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(
-            "\(store.session.projectName), \(store.session.detail), \(store.isConnected ? "connected" : "disconnected")"
+            "\(store.session.projectName), \(store.session.detail), \(store.connectionState.accessibilityDescription)"
         )
     }
 
     private func terminalIdentityLabel(showsDisclosure: Bool) -> some View {
         VStack(spacing: 2) {
             HStack(spacing: 7) {
+                // Amber while a retry is in flight: a brief blip should read as
+                // "hang on" rather than as the red of a dead session.
                 Circle()
-                    .fill(store.isConnected ? FilTheme.filGreen : FilTheme.error)
+                    .fill(store.connectionState.indicatorColor)
                     .frame(width: 7, height: 7)
                     .accessibilityHidden(true)
 
@@ -375,8 +377,12 @@ struct TerminalSessionView: View {
                         .font(.headline)
                         .foregroundStyle(FilTheme.terminalForeground)
 
-                    Text("Trying to reconnect...")
+                    // This used to say "Trying to reconnect..." unconditionally
+                    // while nothing was retrying. The overlay is now only shown
+                    // for `.unreachable`, i.e. once the retries have stopped.
+                    Text("Your session is still running. Tap to reconnect.")
                         .font(.body)
+                        .multilineTextAlignment(.center)
                         .foregroundStyle(FilTheme.terminalForeground.opacity(0.62))
                 }
 
@@ -988,5 +994,19 @@ final class FilAccessoryView: UIInputView {
 
     deinit {
         NotificationCenter.default.removeObserver(self)
+    }
+}
+
+extension TerminalConnectionState {
+    /// Green when live, amber while a retry is in flight, red only once the
+    /// retries have given up. Previously any non-connected state was red,
+    /// which made a one-second blip look like a dead session.
+    // SwiftTerm also exports a `Color`, hence the qualification.
+    var indicatorColor: SwiftUI.Color {
+        switch self {
+        case .connected: FilTheme.filGreen
+        case .connecting, .reconnecting, .suspended: FilTheme.warning
+        case .unreachable: FilTheme.error
+        }
     }
 }

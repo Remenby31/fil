@@ -8,6 +8,7 @@ final class FakeTransport: TerminalTransport, @unchecked Sendable {
     var onDataReceived: (@Sendable (Data) -> Void)?
     var onConnected: (@Sendable () -> Void)?
     var onDisconnected: (@Sendable () -> Void)?
+    var onBetterPathAvailable: (@Sendable () -> Void)?
 
     private(set) var connectCount = 0
     private(set) var disconnectCount = 0
@@ -186,8 +187,8 @@ final class TerminalSessionTests: XCTestCase {
         XCTAssertNil(registry.existingSession(sessionId: sid))
     }
 
-    /// A dropped connection must not be reported as something the user can ignore.
-    func testTransportDeathSurfacesAsUnreachable() {
+    /// A dropped connection enters the retry state (phase 2), not a dead end.
+    func testTransportDeathEntersRetry() {
         let registry = TerminalConnectionRegistry.shared
         let sid = "session-g"
 
@@ -199,7 +200,155 @@ final class TerminalSessionTests: XCTestCase {
 
         XCTAssertEqual(
             registry.existingSession(sessionId: sid)?.currentState,
-            .unreachable("Connection lost")
+            .reconnecting(attempt: 1)
         )
+    }
+}
+
+/// Phase 2: the automatic retry policy.
+final class ReconnectPolicyTests: XCTestCase {
+    private var recorder = TransportRecorder()
+    private var transports: [FakeTransport] { recorder.all }
+
+    override func setUp() {
+        super.setUp()
+        recorder = TransportRecorder()
+        let recorder = self.recorder
+        TerminalConnectionRegistry.shared.removeAllSessions()
+        TerminalConnectionRegistry.shared.makeTransport = { _, _ in
+            let t = FakeTransport()
+            recorder.record(t)
+            return t
+        }
+    }
+
+    override func tearDown() {
+        TerminalConnectionRegistry.shared.removeAllSessions()
+        super.tearDown()
+    }
+
+    /// The core of the reported "stuck on Reconnecting" symptom: a dropped
+    /// connection used to sit there until the user tapped the button.
+    func testADroppedConnectionRetriesByItself() async {
+        let registry = TerminalConnectionRegistry.shared
+        let sid = "retry-a"
+
+        _ = registry.open(sessionId: sid, hubHost: "example.invalid")
+        transports[0].becomeConnected()
+        transports[0].die()
+
+        // First backoff is 0.25s +/- jitter.
+        try? await Task.sleep(nanoseconds: 700_000_000)
+
+        XCTAssertGreaterThanOrEqual(
+            transports.count, 2,
+            "a dropped connection must retry without the user tapping anything"
+        )
+    }
+
+    /// The state must say "retrying", not "dead", while a retry is pending.
+    func testRetryingStateIsNotUserActionable() async {
+        let registry = TerminalConnectionRegistry.shared
+        let sid = "retry-b"
+
+        _ = registry.open(sessionId: sid, hubHost: "example.invalid")
+        transports[0].becomeConnected()
+        transports[0].die()
+
+        let state = registry.existingSession(sessionId: sid)?.currentState
+        if case .reconnecting = state {
+            XCTAssertFalse(
+                state!.needsUserAction,
+                "a retry in flight must not raise the modal overlay"
+            )
+        } else {
+            XCTFail("expected .reconnecting, got \(String(describing: state))")
+        }
+    }
+
+    /// A successful connection must clear the backoff, or the delay ratchets up
+    /// over a long session. This is the iOS twin of the daemon bug.
+    func testBackoffResetsAfterASuccessfulConnection() async {
+        let registry = TerminalConnectionRegistry.shared
+        let sid = "retry-c"
+
+        _ = registry.open(sessionId: sid, hubHost: "example.invalid")
+        transports[0].die()
+        try? await Task.sleep(nanoseconds: 700_000_000)
+        guard transports.count >= 2 else { return XCTFail("no retry happened") }
+
+        // Second attempt succeeds, then dies.
+        transports[1].becomeConnected()
+        XCTAssertEqual(registry.existingSession(sessionId: sid)?.currentState, .connected)
+        transports[1].die()
+
+        // If the backoff had not reset, the next state would report attempt 3.
+        let state = registry.existingSession(sessionId: sid)?.currentState
+        XCTAssertEqual(
+            state, .reconnecting(attempt: 1),
+            "a successful connection must reset the retry counter"
+        )
+    }
+
+    /// suspend() must stop retrying; otherwise a backgrounded app keeps
+    /// hammering the hub and re-taking the Mac's PTY size.
+    func testSuspendStopsRetrying() async {
+        let registry = TerminalConnectionRegistry.shared
+        let sid = "retry-d"
+
+        _ = registry.open(sessionId: sid, hubHost: "example.invalid")
+        transports[0].becomeConnected()
+
+        registry.applicationDidEnterBackground()
+        XCTAssertEqual(registry.existingSession(sessionId: sid)?.currentState, .suspended)
+        let countAtSuspend = transports.count
+
+        try? await Task.sleep(nanoseconds: 700_000_000)
+        XCTAssertEqual(
+            transports.count, countAtSuspend,
+            "a suspended session must not keep reconnecting in the background"
+        )
+    }
+
+    /// Foregrounding must reconnect at once, with no backoff to wait out.
+    func testForegroundResumesImmediately() {
+        let registry = TerminalConnectionRegistry.shared
+        let sid = "retry-e"
+
+        _ = registry.open(sessionId: sid, hubHost: "example.invalid")
+        transports[0].becomeConnected()
+        registry.applicationDidEnterBackground()
+        let countAtSuspend = transports.count
+
+        registry.applicationWillEnterForeground()
+
+        XCTAssertEqual(
+            transports.count, countAtSuspend + 1,
+            "returning to the foreground must reconnect immediately"
+        )
+    }
+
+    /// A better network path means rebuilding: Network.framework QUIC does not
+    /// migrate connections for us.
+    func testBetterPathRebuildsTheConnection() {
+        let registry = TerminalConnectionRegistry.shared
+        let sid = "retry-f"
+
+        _ = registry.open(sessionId: sid, hubHost: "example.invalid")
+        transports[0].becomeConnected()
+        transports[0].onBetterPathAvailable?()
+
+        XCTAssertEqual(transports.count, 2, "a better path must produce a new connection")
+        XCTAssertEqual(transports[0].disconnectCount, 1, "and retire the old one")
+    }
+
+    /// Backoff must be bounded and monotone up to the cap.
+    func testBackoffProgressionIsBoundedAndJittered() {
+        let delays = (1...12).map { ReconnectPolicy.delay(forAttempt: $0) }
+        XCTAssertLessThanOrEqual(
+            delays.max()!, ReconnectPolicy.maxDelay * 1.15,
+            "backoff must stay within the cap plus jitter"
+        )
+        XCTAssertGreaterThan(delays[3], delays[0], "backoff must grow")
     }
 }

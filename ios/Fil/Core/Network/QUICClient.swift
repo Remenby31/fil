@@ -13,6 +13,19 @@ final class QUICTerminalClient: @unchecked Sendable {
     var onDataReceived: (@Sendable (Data) -> Void)?
     var onConnected: (@Sendable () -> Void)?
     var onDisconnected: (@Sendable () -> Void)?
+    /// NWConnection sits in `.waiting` indefinitely when the endpoint is
+    /// unreachable — it never reaches `.failed` on its own. Measured: 94.5s
+    /// against a black hole produced only `.preparing` and `.waiting`. The
+    /// session uses this to arm a watchdog, which is the only way out.
+    var onWaiting: (@Sendable (NWError) -> Void)?
+
+    /// Guarantees `onDisconnected` fires at most once per connection. It could
+    /// previously be delivered up to three times (`.failed`, `.cancelled`, and
+    /// the receive loop), so a single drop produced a burst of state changes.
+    private var didReportDisconnect = false
+    /// Input typed before the stream is ready used to be dropped on the floor.
+    private var pendingInput: [Data] = []
+    private static let maxPendingInputBytes = 64 * 1024
 
     init(hubHost: String, hubPort: UInt16 = 16433) {
         self.hubHost = hubHost
@@ -32,14 +45,32 @@ final class QUICTerminalClient: @unchecked Sendable {
         conn.stateUpdateHandler = { [weak self] state in
             self?.handleConnectionState(state, sessionId: sessionId)
         }
+        // A connection can stay nominally `.ready` while carrying no traffic
+        // after a network change; viability is how Network.framework says so.
+        conn.viabilityUpdateHandler = { [weak self] isViable in
+            guard !isViable else { return }
+            self?.reportDisconnected()
+        }
+        // Wi-Fi <-> cellular handoff. Network.framework QUIC does not migrate
+        // the connection for us, so the session has to build a new one.
+        conn.betterPathUpdateHandler = { [weak self] betterPathAvailable in
+            guard betterPathAvailable else { return }
+            self?.onBetterPathAvailable?()
+        }
 
         stateLock.filWithLock {
             connection = conn
             isReady = false
             lastSentResize = nil
+            didReportDisconnect = false
+            pendingInput.removeAll()
         }
         conn.start(queue: .global(qos: .userInteractive))
     }
+
+    /// Signalled when the OS reports a better route; the session responds by
+    /// standing up a replacement connection.
+    var onBetterPathAvailable: (@Sendable () -> Void)?
 
     func disconnect() {
         let (conn, wasReady) = stateLock.filWithLock {
@@ -49,9 +80,17 @@ final class QUICTerminalClient: @unchecked Sendable {
             isReady = false
             pendingResize = nil
             lastSentResize = nil
+            pendingInput.removeAll()
+            // A deliberate teardown must not look like a drop to the session.
+            didReportDisconnect = true
             return (conn, wasReady)
         }
         guard let conn else { return }
+
+        // Otherwise the handlers keep firing on a connection we have discarded.
+        conn.stateUpdateHandler = nil
+        conn.viabilityUpdateHandler = nil
+        conn.betterPathUpdateHandler = nil
 
         guard wasReady else {
             conn.cancel()
@@ -70,7 +109,19 @@ final class QUICTerminalClient: @unchecked Sendable {
 
     func sendInput(_ data: Data) {
         guard !data.isEmpty else { return }
-        sendFrame(makeInputFrame(data))
+        let frame = makeInputFrame(data)
+        let ready = stateLock.filWithLock { () -> Bool in
+            if isReady { return true }
+            // Buffer instead of dropping: keystrokes typed during the
+            // sub-second window before the stream is ready used to vanish.
+            let buffered = pendingInput.reduce(0) { $0 + $1.count }
+            if buffered + frame.count <= Self.maxPendingInputBytes {
+                pendingInput.append(frame)
+            }
+            return false
+        }
+        guard ready else { return }
+        sendFrame(frame)
     }
 
     func sendResize(cols: UInt16, rows: UInt16) {
@@ -92,28 +143,47 @@ final class QUICTerminalClient: @unchecked Sendable {
         switch state {
         case .ready:
             sendStreamHeader(sessionId: sessionId)
-            let pendingResize = stateLock.filWithLock {
+            let (pendingResize, queuedInput) = stateLock.filWithLock {
                 isReady = true
                 let resize = self.pendingResize
                 if let resize {
                     lastSentResize = resize
                 }
-                return resize
+                let queued = pendingInput
+                pendingInput.removeAll()
+                return (resize, queued)
             }
             if let pendingResize {
                 sendFrame(makeResizeFrame(cols: pendingResize.cols, rows: pendingResize.rows))
             }
+            for frame in queuedInput {
+                sendFrame(frame)
+            }
             onConnected?()
             startReceiving()
-        case .failed:
-            stateLock.filWithLock { isReady = false }
-            onDisconnected?()
-        case .cancelled:
-            stateLock.filWithLock { isReady = false }
-            onDisconnected?()
-        default:
+        case .waiting(let error):
+            // Not a failure as far as Network.framework is concerned: it will
+            // keep waiting forever. Hand it to the session, which times out.
+            onWaiting?(error)
+        case .failed, .cancelled:
+            reportDisconnected()
+        case .preparing, .setup:
+            break
+        @unknown default:
             break
         }
+    }
+
+    /// Collapses the several teardown paths into exactly one notification.
+    private func reportDisconnected() {
+        let shouldReport = stateLock.filWithLock {
+            isReady = false
+            guard !didReportDisconnect else { return false }
+            didReportDisconnect = true
+            return true
+        }
+        guard shouldReport else { return }
+        onDisconnected?()
     }
 
     private func sendStreamHeader(sessionId: String) {
@@ -138,7 +208,7 @@ final class QUICTerminalClient: @unchecked Sendable {
                 self?.onDataReceived?(data)
             }
             if isComplete || error != nil {
-                self?.onDisconnected?()
+                self?.reportDisconnected()
                 return
             }
             self?.receiveLoop()

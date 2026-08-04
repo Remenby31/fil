@@ -1,5 +1,6 @@
 import ComposableArchitecture
 import Foundation
+import Network
 
 struct TerminalSessionContext: Equatable, Identifiable {
     let session: Session
@@ -320,6 +321,8 @@ final class TerminalConnectionRegistry: @unchecked Sendable {
 
     private let lock = NSLock()
     private var sessions: [String: TerminalSession] = [:]
+    private let pathMonitor = NWPathMonitor()
+    private var isMonitoringPath = false
 
     /// Overridable so tests can drive the state machine without networking.
     var makeTransport: @Sendable (_ sessionId: String, _ hubHost: String) -> TerminalTransport = {
@@ -353,10 +356,46 @@ final class TerminalConnectionRegistry: @unchecked Sendable {
     /// Idempotent: repeated calls attach another subscriber to the same live
     /// connection instead of tearing it down and rebuilding it.
     func open(sessionId: String, hubHost: String) -> AsyncStream<TerminalConnectionState> {
+        startPathMonitoringIfNeeded()
         let session = session(sessionId: sessionId, hubHost: hubHost)
         let stream = session.subscribe()
         session.connectIfNeeded()
         return stream
+    }
+
+    /// One monitor for the whole app. `pathUpdateHandler` fires on every path
+    /// change, including redundant `.satisfied` callbacks, so this must be
+    /// idempotent — the old ConnectionManager opened a new socket on each one.
+    private func startPathMonitoringIfNeeded() {
+        let shouldStart = lock.filWithLock {
+            guard !isMonitoringPath else { return false }
+            isMonitoringPath = true
+            return true
+        }
+        guard shouldStart else { return }
+
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            guard path.status == .satisfied, let self else { return }
+            // Connectivity is back: collapse any pending backoff rather than
+            // making the user wait out a timer that is now pointless.
+            for session in self.lock.filWithLock({ Array(self.sessions.values) }) {
+                session.retryImmediatelyIfWaiting()
+            }
+        }
+        pathMonitor.start(queue: DispatchQueue(label: "sh.fil.path-monitor"))
+    }
+
+    /// Called on scene phase transitions; see FilApp.
+    func applicationDidEnterBackground() {
+        for session in lock.filWithLock({ Array(sessions.values) }) {
+            session.suspend()
+        }
+    }
+
+    func applicationWillEnterForeground() {
+        for session in lock.filWithLock({ Array(sessions.values) }) {
+            session.resume()
+        }
     }
 
     /// Force a fresh connection for a session that is already open.

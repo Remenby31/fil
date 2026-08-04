@@ -32,6 +32,16 @@ extension TerminalConnectionState {
         case .unreachable: .stale
         }
     }
+
+    var accessibilityDescription: String {
+        switch self {
+        case .connected: "connected"
+        case .connecting: "connecting"
+        case .reconnecting: "reconnecting"
+        case .suspended: "suspended"
+        case .unreachable: "disconnected"
+        }
+    }
 }
 
 /// The transport a `TerminalSession` drives. Exists so tests can run the
@@ -40,11 +50,30 @@ protocol TerminalTransport: AnyObject, Sendable {
     var onDataReceived: (@Sendable (Data) -> Void)? { get set }
     var onConnected: (@Sendable () -> Void)? { get set }
     var onDisconnected: (@Sendable () -> Void)? { get set }
+    var onBetterPathAvailable: (@Sendable () -> Void)? { get set }
 
     func connect(sessionId: String)
     func disconnect()
     func sendInput(_ data: Data)
     func sendResize(cols: UInt16, rows: UInt16)
+}
+
+/// Retry pacing. Deliberately aggressive at the start: the overwhelmingly
+/// common case is a phone coming back from the background, where the hub is
+/// reachable immediately and any delay is felt as lag.
+enum ReconnectPolicy {
+    static let initialDelay: TimeInterval = 0.25
+    static let maxDelay: TimeInterval = 8
+    /// How long a connection may sit in `.waiting`/`.preparing` before we give
+    /// up on it and build a new one. NWConnection provides no connect timeout.
+    static let connectTimeout: TimeInterval = 6
+
+    static func delay(forAttempt attempt: Int) -> TimeInterval {
+        let raw = initialDelay * pow(2, Double(max(0, attempt - 1)))
+        let capped = min(raw, maxDelay)
+        // Jitter so several sessions resuming together do not synchronise.
+        return capped * Double.random(in: 0.85...1.15)
+    }
 }
 
 extension QUICTerminalClient: TerminalTransport {}
@@ -71,6 +100,12 @@ final class TerminalSession: @unchecked Sendable {
     private var subscribers: [UUID: AsyncStream<TerminalConnectionState>.Continuation] = [:]
     /// Survives reconnects so the new connection can re-declare the geometry.
     private var lastKnownSize: (cols: UInt16, rows: UInt16)?
+    private var attempt = 0
+    private var retryTask: Task<Void, Never>?
+    private var watchdog: Task<Void, Never>?
+    /// Set while the app is backgrounded, so a late callback cannot resurrect
+    /// the connection we deliberately released.
+    private var isSuspended = false
 
     init(sessionId: String, makeTransport: @escaping @Sendable (String) -> TerminalTransport) {
         self.sessionId = sessionId
@@ -117,14 +152,33 @@ final class TerminalSession: @unchecked Sendable {
         startConnection()
     }
 
-    /// Drop the current connection and immediately open a fresh one.
+    /// Drop the current connection and immediately open a fresh one, resetting
+    /// the backoff. This is what the Reconnect button does.
     func reconnectNow() {
         let old = lock.filWithLock {
             let t = transport
             transport = nil
+            attempt = 0
+            isSuspended = false
+            retryTask?.cancel()
+            retryTask = nil
             return t
         }
         old?.disconnect()
+        startConnection()
+    }
+
+    /// Collapse any pending backoff and retry immediately — used when the
+    /// network path becomes satisfied or the app returns to the foreground.
+    func retryImmediatelyIfWaiting() {
+        let shouldRetry = lock.filWithLock {
+            guard !isSuspended, transport == nil else { return false }
+            retryTask?.cancel()
+            retryTask = nil
+            attempt = 0
+            return true
+        }
+        guard shouldRetry else { return }
         startConnection()
     }
 
@@ -133,9 +187,16 @@ final class TerminalSession: @unchecked Sendable {
 
         client.onConnected = { [weak self] in
             guard let self else { return }
+            let size = self.lock.filWithLock { () -> (cols: UInt16, rows: UInt16)? in
+                // A successful connection clears the backoff; without this the
+                // delay ratchets up across a long-lived session.
+                self.attempt = 0
+                self.cancelWatchdogLocked()
+                return self.lastKnownSize
+            }
             // Re-declare the geometry: a fresh connection knows nothing about
             // the size the user is actually looking at.
-            if let size = self.lock.filWithLock({ self.lastKnownSize }) {
+            if let size {
                 client.sendResize(cols: size.cols, rows: size.rows)
             }
             self.transition(to: .connected)
@@ -146,22 +207,74 @@ final class TerminalSession: @unchecked Sendable {
         client.onDataReceived = { [weak self] data in
             self?.outputRelay.enqueue(data)
         }
+        client.onBetterPathAvailable = { [weak self] in
+            // Network.framework QUIC does not migrate; rebuild on the new path.
+            self?.reconnectNow()
+        }
 
-        lock.filWithLock { transport = client }
-        transition(to: .connecting)
+        // `attempt` counts consecutive failures, so it is incremented on
+        // failure, not here. Zero means "this is a first try, not a retry".
+        let failuresSoFar = lock.filWithLock {
+            transport = client
+            return attempt
+        }
+        transition(to: failuresSoFar == 0 ? .connecting : .reconnecting(attempt: failuresSoFar))
+        armWatchdog(for: client)
         client.connect(sessionId: sessionId)
     }
 
-    /// Overridden in phase 2 by the automatic retry policy. For now a dropped
-    /// connection surfaces as `unreachable` and waits for the user.
+    /// NWConnection never leaves `.waiting` on its own, so a stalled connect
+    /// has to be killed from the outside or the UI hangs on "Reconnecting"
+    /// forever — which is exactly the reported symptom.
+    private func armWatchdog(for client: TerminalTransport) {
+        let task = Task { [weak self, weak client] in
+            try? await Task.sleep(nanoseconds: UInt64(ReconnectPolicy.connectTimeout * 1_000_000_000))
+            guard !Task.isCancelled, let self else { return }
+            let isStillPending = self.lock.filWithLock {
+                self.transport === client && self.state != .connected
+            }
+            guard isStillPending else { return }
+            client?.disconnect()
+            self.handleDisconnected()
+        }
+        lock.filWithLock {
+            watchdog?.cancel()
+            watchdog = task
+        }
+    }
+
+    private func cancelWatchdogLocked() {
+        watchdog?.cancel()
+        watchdog = nil
+    }
+
     private func handleDisconnected() {
-        let hadTransport = lock.filWithLock {
+        let (hadTransport, nextAttempt, suspended) = lock.filWithLock {
             let had = transport != nil
             transport = nil
-            return had
+            cancelWatchdogLocked()
+            if had { attempt += 1 }
+            return (had, attempt, isSuspended)
         }
-        guard hadTransport else { return }
-        transition(to: .unreachable("Connection lost"))
+        guard hadTransport, !suspended else { return }
+        scheduleRetry(afterAttempt: nextAttempt)
+    }
+
+    private func scheduleRetry(afterAttempt attempt: Int) {
+        let delay = ReconnectPolicy.delay(forAttempt: attempt)
+        transition(to: .reconnecting(attempt: attempt))
+
+        let task = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled, let self else { return }
+            let shouldStart = self.lock.filWithLock { !self.isSuspended && self.transport == nil }
+            guard shouldStart else { return }
+            self.startConnection()
+        }
+        lock.filWithLock {
+            retryTask?.cancel()
+            retryTask = task
+        }
     }
 
     /// Release the connection but keep the session (and its relay, scrollback
@@ -170,10 +283,26 @@ final class TerminalSession: @unchecked Sendable {
         let old = lock.filWithLock {
             let t = transport
             transport = nil
+            isSuspended = true
+            retryTask?.cancel()
+            retryTask = nil
+            cancelWatchdogLocked()
             return t
         }
         old?.disconnect()
         transition(to: .suspended)
+    }
+
+    /// Coming back to the foreground: no backoff, connect at once.
+    func resume() {
+        let shouldConnect = lock.filWithLock {
+            guard isSuspended else { return false }
+            isSuspended = false
+            attempt = 0
+            return transport == nil
+        }
+        guard shouldConnect else { return }
+        startConnection()
     }
 
     /// Final teardown. Only the registry's `close` calls this.
@@ -183,6 +312,9 @@ final class TerminalSession: @unchecked Sendable {
             let s = subscribers
             transport = nil
             subscribers.removeAll()
+            retryTask?.cancel()
+            retryTask = nil
+            cancelWatchdogLocked()
             return (t, s)
         }
         old?.disconnect()
