@@ -1,5 +1,5 @@
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use std::collections::HashSet;
@@ -47,4 +47,30 @@ fn parse_sqlite_datetime(value: &str) -> DateTime<Utc> {
     NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S")
         .map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc))
         .unwrap_or_else(|_| Utc::now())
+}
+
+/// Mint a short-lived ticket authorising one QUIC attach to this session.
+///
+/// This is the only place the "may this user touch this session" question is
+/// asked for the data plane. `owns_session` already existed but had exactly
+/// one caller (live activities) and was never consulted by the QUIC path,
+/// which accepted any peer that knew a session id.
+pub async fn create_session_ticket(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+) -> Result<Json<SessionTicket>, StatusCode> {
+    if !state.sessions.owns_session(&auth.user_id, &session_id) {
+        // Deliberately NOT_FOUND rather than FORBIDDEN: a user who does not
+        // own a session should not be able to probe whether it exists.
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    let ticket = state.tickets.issue(&session_id, &auth.user_id);
+    Ok(Json(SessionTicket { ticket }))
+}
+
+#[derive(serde::Serialize)]
+pub struct SessionTicket {
+    pub ticket: String,
 }

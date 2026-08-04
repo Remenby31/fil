@@ -8,6 +8,7 @@ mod quic_certs;
 mod routes;
 mod sessions;
 mod state;
+mod tickets;
 mod ws;
 
 use axum::Router;
@@ -44,6 +45,8 @@ async fn main() -> anyhow::Result<()> {
 
     let state = AppState::new(config).await?;
     let quic_sessions = state.sessions.clone();
+    let quic_tickets = state.tickets.clone();
+    let require_ticket = state.config.require_attach_ticket;
     let mut activity_updates = state.sessions.subscribe();
     let activity_db = state.db.pool.clone();
     let activity_apns = state.apns.clone();
@@ -85,6 +88,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/devices/{device_id}", delete(routes::delete_device))
         .route("/account", delete(routes::delete_account))
         .route("/sessions", get(routes::list_sessions))
+        .route(
+            "/sessions/{session_id}/ticket",
+            post(routes::create_session_ticket),
+        )
         .route("/live-activities", post(routes::register_live_activity))
         .route(
             "/live-activities/{activity_id}",
@@ -107,7 +114,8 @@ async fn main() -> anyhow::Result<()> {
         match quic_certs::QuicCerts::load_or_generate(&data_dir) {
             Ok(certs) => {
                 info!(fingerprint = %certs.fingerprint(), "QUIC cert fingerprint");
-                if let Err(e) = quic::start_quic_server(quic_addr, certs, quic_sessions).await {
+                if let Err(e) = quic::start_quic_server(quic_addr, certs, quic_sessions, quic_tickets, require_ticket)
+                    .await {
                     error!(error = %e, "QUIC server failed");
                 }
             }

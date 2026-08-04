@@ -2,6 +2,7 @@ use crate::apns::ApnsClient;
 use crate::config::Config;
 use crate::db::Database;
 use crate::sessions::SessionRegistry;
+use crate::tickets::TicketStore;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -9,6 +10,7 @@ pub struct AppState {
     pub db: Database,
     pub sessions: SessionRegistry,
     pub apns: ApnsClient,
+    pub tickets: TicketStore,
 }
 
 impl AppState {
@@ -22,6 +24,7 @@ impl AppState {
             db,
             sessions,
             apns,
+            tickets: TicketStore::new(),
         })
     }
 }

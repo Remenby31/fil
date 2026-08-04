@@ -344,9 +344,11 @@ final class TerminalConnectionRegistry: @unchecked Sendable {
             }
             let host = hubHost ?? ""
             let make = makeTransport
-            let created = TerminalSession(sessionId: sessionId) { sid in
-                make(sid, host)
-            }
+            let created = TerminalSession(
+                sessionId: sessionId,
+                makeTransport: { sid in make(sid, host) },
+                mintTicket: { sid in await Self.mintTicket(sessionId: sid) }
+            )
             sessions[sessionId] = created
             return created
         }
@@ -415,6 +417,13 @@ final class TerminalConnectionRegistry: @unchecked Sendable {
 
     func resize(sessionId: String, cols: UInt16, rows: UInt16) {
         lock.filWithLock { sessions[sessionId] }?.resize(cols: cols, rows: rows)
+    }
+
+    /// Fetches a single-use QUIC attach ticket. A failure is not fatal: the
+    /// client falls back to the legacy header, so an older hub keeps working.
+    private static func mintTicket(sessionId: String) async -> String? {
+        guard let token = TokenStorage.loadToken() else { return nil }
+        return try? await HubClient().sessionTicket(sessionId: sessionId, token: token)
     }
 
     // MARK: - Test seams

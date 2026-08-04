@@ -34,6 +34,21 @@ actor HubClient {
         try await get("/sessions", token: token)
     }
 
+    /// Mint a single-use, short-lived ticket authorising one QUIC attach.
+    ///
+    /// The QUIC data plane used to accept any peer that knew a session id. The
+    /// account JWT is deliberately not used here: it lives 30 days, so putting
+    /// it on the data plane would turn a leaked session id into a leaked
+    /// account.
+    func sessionTicket(sessionId: String, token: String) async throws -> String {
+        let response: SessionTicketResponse = try await post(
+            "/sessions/\(sessionId)/ticket",
+            body: EmptyBody(),
+            token: token
+        )
+        return response.ticket
+    }
+
     // MARK: - Account
 
     func deleteAccount(token: String) async throws {
@@ -111,6 +126,12 @@ actor HubClient {
 }
 
 // MARK: - Request/Response Types
+
+struct SessionTicketResponse: Codable {
+    let ticket: String
+}
+
+struct EmptyBody: Codable {}
 
 struct RegisterDeviceRequest: Codable {
     let name: String

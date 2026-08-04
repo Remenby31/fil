@@ -11,6 +11,7 @@ use tracing::{debug, info, warn};
 
 use crate::quic_certs::QuicCerts;
 use crate::sessions::SessionRegistry;
+use crate::tickets::TicketStore;
 
 const FRAME_INPUT: u8 = 0x00;
 const FRAME_RESIZE: u8 = 0x01;
@@ -18,6 +19,8 @@ const CLIENT_FRAME_DETACH: u8 = 0x02;
 const MAX_INPUT_FRAME_BYTES: usize = 1024 * 1024;
 const QUIC_IDLE_TIMEOUT_SECS: u64 = 15;
 const QUIC_KEEP_ALIVE_SECS: u64 = 5;
+/// A hex-encoded 32-byte ticket is 64 chars; the cap only bounds a hostile peer.
+const MAX_TICKET_BYTES: usize = 128;
 
 /// A connected client (iOS app) watching a session
 struct AttachedClient {
@@ -268,6 +271,8 @@ pub async fn start_quic_server(
     addr: SocketAddr,
     certs: QuicCerts,
     sessions: SessionRegistry,
+    tickets: TicketStore,
+    require_ticket: bool,
 ) -> Result<()> {
     let cert_chain = vec![rustls::pki_types::CertificateDer::from(certs.cert_der)];
     let key = rustls::pki_types::PrivateKeyDer::try_from(certs.key_der)
@@ -299,12 +304,13 @@ pub async fn start_quic_server(
     while let Some(incoming) = endpoint.accept().await {
         let router = router.clone();
         let sessions = sessions.clone();
+        let tickets = tickets.clone();
         tokio::spawn(async move {
             match incoming.await {
                 Ok(conn) => {
                     let remote = conn.remote_address();
                     info!(remote = %remote, "QUIC connection accepted");
-                    handle_connection(conn, router, sessions).await;
+                    handle_connection(conn, router, sessions, tickets, require_ticket).await;
                 }
                 Err(e) => {
                     warn!(error = %e, "QUIC connection failed");
@@ -320,6 +326,8 @@ async fn handle_connection(
     conn: quinn::Connection,
     router: Arc<QuicRouter>,
     sessions: SessionRegistry,
+    tickets: TicketStore,
+    require_ticket: bool,
 ) {
     let remote = conn.remote_address();
 
@@ -328,8 +336,9 @@ async fn handle_connection(
             Ok((send, recv)) => {
                 let router = router.clone();
                 let sessions = sessions.clone();
+                let tickets = tickets.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = handle_stream(send, recv, router, sessions).await {
+                    if let Err(e) = handle_stream(send, recv, router, sessions, tickets, require_ticket).await {
                         debug!(error = %e, "stream ended");
                     }
                 });
@@ -351,6 +360,8 @@ async fn handle_stream(
     mut recv: RecvStream,
     router: Arc<QuicRouter>,
     sessions: SessionRegistry,
+    tickets: TicketStore,
+    require_ticket: bool,
 ) -> Result<()> {
     // First message identifies the stream type
     let mut header = [0u8; 1];
@@ -412,7 +423,13 @@ async fn handle_stream(
         // 0x02 = Client attach (iOS app watching a session)
         // After the session id, client->hub data is framed:
         // 0x00 + u32 length + bytes for input, or 0x01 + u16 cols + u16 rows.
-        0x02 => {
+        // 0x02 = v1 client attach, unauthenticated. Still accepted so a hub
+        // deployed ahead of the app keeps working; remove once the fleet has
+        // moved to 0x12.
+        // 0x12 = v2 client attach, ticket-authenticated.
+        0x02 | 0x12 => {
+            let is_v2 = header[0] == 0x12;
+
             // Read session_id
             let mut len_buf = [0u8; 2];
             recv.read_exact(&mut len_buf).await?;
@@ -420,6 +437,40 @@ async fn handle_stream(
             let mut sid_buf = vec![0u8; sid_len];
             recv.read_exact(&mut sid_buf).await?;
             let session_id = String::from_utf8(sid_buf)?;
+
+            if is_v2 {
+                let mut tlen = [0u8; 2];
+                recv.read_exact(&mut tlen).await?;
+                let ticket_len = u16::from_be_bytes(tlen) as usize;
+                if ticket_len > MAX_TICKET_BYTES {
+                    warn!(session_id = %session_id, ticket_len, "attach ticket too large");
+                    return Ok(());
+                }
+                let mut ticket_buf = vec![0u8; ticket_len];
+                recv.read_exact(&mut ticket_buf).await?;
+                let ticket = String::from_utf8(ticket_buf)?;
+
+                match tickets.redeem(&ticket, &session_id) {
+                    Some(user_id) => {
+                        debug!(session_id = %session_id, %user_id, "attach ticket accepted");
+                    }
+                    None => {
+                        warn!(session_id = %session_id, "attach rejected: invalid or spent ticket");
+                        return Ok(());
+                    }
+                }
+            } else if require_ticket {
+                warn!(
+                    session_id = %session_id,
+                    "rejected unauthenticated v1 attach (FIL_REQUIRE_ATTACH_TICKET is on)"
+                );
+                return Ok(());
+            } else {
+                warn!(
+                    session_id = %session_id,
+                    "unauthenticated v1 attach accepted; client should upgrade to 0x12"
+                );
+            }
 
             debug!(session_id = %session_id, "client attached to session");
 

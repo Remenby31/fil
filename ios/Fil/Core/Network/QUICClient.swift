@@ -26,6 +26,10 @@ final class QUICTerminalClient: @unchecked Sendable {
     /// Input typed before the stream is ready used to be dropped on the floor.
     private var pendingInput: [Data] = []
     private static let maxPendingInputBytes = 64 * 1024
+    /// Single-use credential for this attach, minted over HTTPS just before
+    /// connecting. Nil falls back to the unauthenticated v1 header so the app
+    /// still works against a hub that predates ticket support.
+    private var attachTicket: String?
 
     init(hubHost: String, hubPort: UInt16 = 16433) {
         self.hubHost = hubHost
@@ -33,6 +37,11 @@ final class QUICTerminalClient: @unchecked Sendable {
     }
 
     func connect(sessionId: String) {
+        connect(sessionId: sessionId, ticket: nil)
+    }
+
+    func connect(sessionId: String, ticket: String?) {
+        stateLock.filWithLock { attachTicket = ticket }
         let params = NWParameters(quic: makeQUICOptions())
 
         let endpoint = NWEndpoint.hostPort(
@@ -186,12 +195,26 @@ final class QUICTerminalClient: @unchecked Sendable {
         onDisconnected?()
     }
 
+    /// v2 attach header: [0x12][u16 sid_len][sid][u16 ticket_len][ticket].
+    ///
+    /// A distinct stream type rather than an extended 0x02, so an older hub
+    /// fails cleanly on an unknown type instead of misparsing the ticket as
+    /// part of the session id.
     private func sendStreamHeader(sessionId: String) {
-        var header = Data([0x02])
+        let ticket = stateLock.filWithLock { attachTicket }
+
+        var header = Data([ticket == nil ? 0x02 : 0x12])
         let sidData = Data(sessionId.utf8)
         var lenBytes = UInt16(sidData.count).bigEndian
         header.append(Data(bytes: &lenBytes, count: 2))
         header.append(sidData)
+
+        if let ticket {
+            let ticketData = Data(ticket.utf8)
+            var ticketLen = UInt16(ticketData.count).bigEndian
+            header.append(Data(bytes: &ticketLen, count: 2))
+            header.append(ticketData)
+        }
 
         let conn = stateLock.filWithLock { connection }
         conn?.send(content: header, completion: .contentProcessed { _ in })

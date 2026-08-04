@@ -52,7 +52,7 @@ protocol TerminalTransport: AnyObject, Sendable {
     var onDisconnected: (@Sendable () -> Void)? { get set }
     var onBetterPathAvailable: (@Sendable () -> Void)? { get set }
 
-    func connect(sessionId: String)
+    func connect(sessionId: String, ticket: String?)
     func disconnect()
     func sendInput(_ data: Data)
     func sendResize(cols: UInt16, rows: UInt16)
@@ -94,6 +94,10 @@ final class TerminalSession: @unchecked Sendable {
 
     private let lock = NSLock()
     private let makeTransport: @Sendable (String) -> TerminalTransport
+    /// Mints the single-use attach credential. Returns nil when the hub or the
+    /// account cannot supply one, in which case we fall back to the legacy
+    /// unauthenticated header rather than locking the user out.
+    private let mintTicket: @Sendable (String) async -> String?
 
     private var transport: TerminalTransport?
     private var state: TerminalConnectionState = .connecting
@@ -107,9 +111,14 @@ final class TerminalSession: @unchecked Sendable {
     /// the connection we deliberately released.
     private var isSuspended = false
 
-    init(sessionId: String, makeTransport: @escaping @Sendable (String) -> TerminalTransport) {
+    init(
+        sessionId: String,
+        makeTransport: @escaping @Sendable (String) -> TerminalTransport,
+        mintTicket: @escaping @Sendable (String) async -> String? = { _ in nil }
+    ) {
         self.sessionId = sessionId
         self.makeTransport = makeTransport
+        self.mintTicket = mintTicket
     }
 
     // MARK: - Subscription
@@ -220,7 +229,18 @@ final class TerminalSession: @unchecked Sendable {
         }
         transition(to: failuresSoFar == 0 ? .connecting : .reconnecting(attempt: failuresSoFar))
         armWatchdog(for: client)
-        client.connect(sessionId: sessionId)
+
+        // The ticket is fetched over HTTPS before the QUIC handshake. The
+        // watchdog is already armed, so a hub that never answers still times
+        // out into the normal retry path instead of hanging here.
+        Task { [weak self, weak client] in
+            guard let self else { return }
+            let ticket = await self.mintTicket(self.sessionId)
+            guard let client,
+                  self.lock.filWithLock({ self.transport === client })
+            else { return }
+            client.connect(sessionId: self.sessionId, ticket: ticket)
+        }
     }
 
     /// NWConnection never leaves `.waiting` on its own, so a stalled connect

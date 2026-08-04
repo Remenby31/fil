@@ -21,6 +21,10 @@ pub struct Config {
     pub public_url: String,
     pub quic_port: u16,
     pub data_dir: String,
+    /// Reject unauthenticated v1 QUIC attaches. Defaults to false so a hub can
+    /// be deployed before the app that mints tickets; flip it once the fleet
+    /// has upgraded, which fully closes the data plane.
+    pub require_attach_ticket: bool,
     pub apns: Option<ApnsConfig>,
 }
 
@@ -53,6 +57,9 @@ impl Config {
                 .and_then(|p| p.parse().ok())
                 .unwrap_or(16433),
             data_dir: std::env::var("DATA_DIR").unwrap_or_else(|_| ".".to_string()),
+            require_attach_ticket: std::env::var("FIL_REQUIRE_ATTACH_TICKET")
+                .map(|v| matches!(v.as_str(), "1" | "true" | "yes"))
+                .unwrap_or(false),
             apns: apns_from_env(),
         }
     }
