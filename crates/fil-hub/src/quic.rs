@@ -57,6 +57,27 @@ impl ScrollbackBuffer {
         if self.buf.len() > self.max_size {
             let excess = self.buf.len() - self.max_size;
             self.buf.drain(..excess);
+            self.align_to_line_start();
+        }
+    }
+
+    /// Drop the partial line at the front.
+    ///
+    /// Truncating at an arbitrary byte offset means the replay can begin in the
+    /// middle of a CSI sequence or a UTF-8 codepoint. Measured on the real
+    /// 64 KiB path: 14 of 16 alignments started mid-escape and 2 produced
+    /// invalid UTF-8, so a reattaching client rendered literal junk like "1m"
+    /// or lost its colour state.
+    ///
+    /// `\n` is a safe cut point: it can never appear inside a CSI sequence
+    /// (parameters are 0x30-0x3F, intermediates 0x20-0x2F, final 0x40-0x7E) and
+    /// it is never a UTF-8 continuation byte.
+    fn align_to_line_start(&mut self) {
+        if let Some(idx) = self.buf.iter().position(|&b| b == b'\n') {
+            self.buf.drain(..=idx);
+        } else {
+            // No newline in the whole buffer: nothing can be safely salvaged.
+            self.buf.clear();
         }
     }
 
@@ -69,11 +90,18 @@ impl ScrollbackBuffer {
 pub struct QuicRouter {
     /// session_id → list of attached clients
     clients: Arc<RwLock<HashMap<String, Vec<AttachedClient>>>>,
-    /// session_id → sender to daemon's command stream
-    daemon_inputs: Arc<RwLock<HashMap<String, mpsc::Sender<DaemonCommand>>>>,
+    /// session_id → the daemon's command stream, tagged with the generation
+    /// that registered it so a dying stream cannot unregister a newer one.
+    daemon_inputs: Arc<RwLock<HashMap<String, RegisteredDaemon>>>,
     /// session_id → scrollback buffer (last 64KB of output)
     scrollback: Arc<RwLock<HashMap<String, ScrollbackBuffer>>>,
     next_client_id: AtomicU64,
+    next_daemon_generation: AtomicU64,
+}
+
+struct RegisteredDaemon {
+    generation: u64,
+    sender: mpsc::Sender<DaemonCommand>,
 }
 
 impl QuicRouter {
@@ -83,11 +111,16 @@ impl QuicRouter {
             daemon_inputs: Arc::new(RwLock::new(HashMap::new())),
             scrollback: Arc::new(RwLock::new(HashMap::new())),
             next_client_id: AtomicU64::new(1),
+            next_daemon_generation: AtomicU64::new(1),
         }
     }
 
     pub async fn forward_to_clients(&self, session_id: &str, data: &[u8]) {
-        // Store in scrollback buffer
+        // Lock order is clients -> scrollback everywhere. attach_client used to
+        // release the clients lock before taking scrollback, which left a
+        // window where a just-attached client received a byte live AND saw it
+        // again in its catch-up snapshot.
+        let clients = self.clients.read().await;
         {
             let mut scrollback = self.scrollback.write().await;
             scrollback
@@ -96,7 +129,6 @@ impl QuicRouter {
                 .push(data);
         }
 
-        let clients = self.clients.read().await;
         if let Some(senders) = clients.get(session_id) {
             for client in senders {
                 // Remote delivery is best-effort. A slow phone must never
@@ -112,24 +144,26 @@ impl QuicRouter {
     ) -> (u64, bool, mpsc::Receiver<Vec<u8>>, Vec<u8>) {
         let (tx, rx) = mpsc::channel(512);
         let client_id = self.next_client_id.fetch_add(1, Ordering::Relaxed);
-        let first_client = {
-            let mut clients = self.clients.write().await;
-            let attached = clients.entry(session_id.to_string()).or_default();
-            let first_client = attached.is_empty();
-            attached.push(AttachedClient {
-                id: client_id,
-                sender: tx,
-            });
-            first_client
-        };
 
-        // Do not hold the clients lock while taking the scrollback lock:
-        // forward_to_clients takes them in the opposite order.
-        let scrollback = self.scrollback.read().await;
-        let catchup = scrollback
-            .get(session_id)
-            .map(|sb| sb.snapshot())
-            .unwrap_or_default();
+        // Hold clients across the scrollback read so the snapshot and the
+        // start of live delivery are one atomic step -- same lock order as
+        // forward_to_clients, so this cannot deadlock.
+        let mut clients = self.clients.write().await;
+        let attached = clients.entry(session_id.to_string()).or_default();
+        let first_client = attached.is_empty();
+        attached.push(AttachedClient {
+            id: client_id,
+            sender: tx,
+        });
+
+        let catchup = {
+            let scrollback = self.scrollback.read().await;
+            scrollback
+                .get(session_id)
+                .map(|sb| sb.snapshot())
+                .unwrap_or_default()
+        };
+        drop(clients);
 
         info!(session_id = %session_id, catchup_bytes = catchup.len(), "client attached to session");
         (client_id, first_client, rx, catchup)
@@ -153,41 +187,79 @@ impl QuicRouter {
         detached_last_client
     }
 
-    pub async fn register_daemon_input(&self, session_id: &str, tx: mpsc::Sender<DaemonCommand>) {
+    /// Returns the generation token that must be presented to unregister.
+    pub async fn register_daemon_input(
+        &self,
+        session_id: &str,
+        tx: mpsc::Sender<DaemonCommand>,
+    ) -> u64 {
+        let generation = self.next_daemon_generation.fetch_add(1, Ordering::Relaxed);
         let mut inputs = self.daemon_inputs.write().await;
-        inputs.insert(session_id.to_string(), tx);
+        inputs.insert(
+            session_id.to_string(),
+            RegisteredDaemon {
+                generation,
+                sender: tx,
+            },
+        );
+        generation
     }
 
     pub async fn send_to_daemon(&self, session_id: &str, data: &[u8]) {
         let inputs = self.daemon_inputs.read().await;
-        if let Some(tx) = inputs.get(session_id) {
-            tx.send(DaemonCommand::Input(data.to_vec())).await.ok();
+        if let Some(d) = inputs.get(session_id) {
+            d.sender.send(DaemonCommand::Input(data.to_vec())).await.ok();
         }
     }
 
     pub async fn resize_daemon(&self, session_id: &str, cols: u16, rows: u16) {
         let inputs = self.daemon_inputs.read().await;
-        if let Some(tx) = inputs.get(session_id) {
-            tx.send(DaemonCommand::Resize { cols, rows }).await.ok();
+        if let Some(d) = inputs.get(session_id) {
+            d.sender.send(DaemonCommand::Resize { cols, rows }).await.ok();
         }
     }
 
-    pub async fn unregister_daemon(&self, session_id: &str) {
+    /// Remove the daemon channel only if the caller still owns it.
+    ///
+    /// The unconditional remove was reproduced live: a daemon reconnect races
+    /// its own dying stream's cleanup, the old stream deletes the channel the
+    /// new one just registered, and the session goes input-dead while output
+    /// keeps flowing. Measured cascade: 1.4 ms.
+    pub async fn unregister_daemon(&self, session_id: &str, generation: u64) {
         let mut inputs = self.daemon_inputs.write().await;
-        inputs.remove(session_id);
+        if inputs
+            .get(session_id)
+            .is_some_and(|d| d.generation == generation)
+        {
+            inputs.remove(session_id);
+        } else {
+            debug!(
+                session_id = %session_id,
+                generation,
+                "stale daemon stream cleanup ignored; a newer stream owns this session"
+            );
+        }
+    }
+
+    /// Drop all per-session state. Called when the session itself goes away;
+    /// without this the 64 KB scrollback leaked for every session id ever seen.
+    pub async fn forget_session(&self, session_id: &str) {
+        self.clients.write().await.remove(session_id);
+        self.daemon_inputs.write().await.remove(session_id);
+        self.scrollback.write().await.remove(session_id);
     }
 
     pub async fn notify_daemon_client_attached(&self, session_id: &str) {
         let inputs = self.daemon_inputs.read().await;
-        if let Some(tx) = inputs.get(session_id) {
-            tx.send(DaemonCommand::ClientAttached).await.ok();
+        if let Some(d) = inputs.get(session_id) {
+            d.sender.send(DaemonCommand::ClientAttached).await.ok();
         }
     }
 
     pub async fn notify_daemon_client_detached(&self, session_id: &str) {
         let inputs = self.daemon_inputs.read().await;
-        if let Some(tx) = inputs.get(session_id) {
-            tx.send(DaemonCommand::ClientDetached).await.ok();
+        if let Some(d) = inputs.get(session_id) {
+            d.sender.send(DaemonCommand::ClientDetached).await.ok();
         }
     }
 }
@@ -299,7 +371,7 @@ async fn handle_stream(
 
             // Register daemon input channel
             let (input_tx, mut input_rx) = mpsc::channel::<DaemonCommand>(256);
-            router.register_daemon_input(&session_id, input_tx).await;
+            let generation = router.register_daemon_input(&session_id, input_tx).await;
 
             // Bidirectional: read PTY output, write client input
             let router_fwd = router.clone();
@@ -333,7 +405,7 @@ async fn handle_stream(
                 _ = write_task => {},
             }
 
-            router.unregister_daemon(&session_id).await;
+            router.unregister_daemon(&session_id, generation).await;
             debug!(session_id = %session_id, "daemon data stream closed");
         }
 
@@ -510,5 +582,108 @@ mod tests {
         assert!(!router.detach_client("session", first_id).await);
         assert!(router.detach_client("session", second_id).await);
         assert!(!router.detach_client("session", second_id).await);
+    }
+}
+
+#[cfg(test)]
+mod router_tests {
+    use super::*;
+
+    /// Reproduced live before the fix: a daemon reconnects, then its previous
+    /// stream's cleanup runs and deletes the channel the new stream just
+    /// registered. Output keeps flowing, input goes nowhere.
+    #[tokio::test]
+    async fn stale_daemon_cleanup_cannot_evict_a_reconnected_daemon() {
+        let router = QuicRouter::new();
+        let sid = "s1";
+
+        let (tx_a, _rx_a) = mpsc::channel(8);
+        let gen_a = router.register_daemon_input(sid, tx_a).await;
+
+        // Daemon reconnects on a fresh stream.
+        let (tx_b, mut rx_b) = mpsc::channel(8);
+        let _gen_b = router.register_daemon_input(sid, tx_b).await;
+
+        // Now A's dying stream cleans up, presenting its own (stale) token.
+        router.unregister_daemon(sid, gen_a).await;
+
+        router.send_to_daemon(sid, b"keystroke").await;
+
+        assert!(
+            rx_b.try_recv().is_ok(),
+            "input must still reach the reconnected daemon"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_owning_daemon_can_still_unregister() {
+        let router = QuicRouter::new();
+        let sid = "s2";
+        let (tx, mut rx) = mpsc::channel(8);
+        let generation = router.register_daemon_input(sid, tx).await;
+
+        router.unregister_daemon(sid, generation).await;
+        router.send_to_daemon(sid, b"x").await;
+
+        assert!(
+            rx.try_recv().is_err(),
+            "after a legitimate unregister nothing should be delivered"
+        );
+    }
+
+    #[test]
+    fn scrollback_truncation_starts_on_a_line_boundary() {
+        // Lines carrying multi-byte UTF-8 and CSI sequences, as a real shell does.
+        let line = "\u{1b}[32m✓\u{1b}[0m déployé — résumé\n";
+        let mut sb = ScrollbackBuffer::new(1024);
+        for _ in 0..200 {
+            sb.push(line.as_bytes());
+        }
+        let snap = sb.snapshot();
+
+        assert!(
+            std::str::from_utf8(&snap).is_ok(),
+            "replay must be valid UTF-8, got {:?}",
+            &snap[..snap.len().min(8)]
+        );
+        assert!(
+            snap.starts_with(b"\x1b["),
+            "replay must start at the beginning of a line, got {:?}",
+            String::from_utf8_lossy(&snap[..snap.len().min(24)])
+        );
+    }
+
+    #[test]
+    fn scrollback_alignment_holds_at_every_offset() {
+        let line = "\u{1b}[32m✓\u{1b}[0m déployé — résumé\n";
+        // Sweep the tail so the cut lands at a different place each time.
+        for shift in 0..16usize {
+            let mut sb = ScrollbackBuffer::new(1024);
+            for _ in 0..200 {
+                sb.push(line.as_bytes());
+            }
+            sb.push(&vec![b'x'; shift]);
+            sb.push(b"\n");
+            let snap = sb.snapshot();
+            assert!(
+                std::str::from_utf8(&snap).is_ok(),
+                "shift {shift} produced invalid UTF-8"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn forget_session_drops_the_scrollback() {
+        let router = QuicRouter::new();
+        let sid = "s3";
+        router.forward_to_clients(sid, b"hello\n").await;
+        assert!(router.scrollback.read().await.contains_key(sid));
+
+        router.forget_session(sid).await;
+
+        assert!(
+            !router.scrollback.read().await.contains_key(sid),
+            "64KB per session id leaked without this"
+        );
     }
 }

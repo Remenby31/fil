@@ -13,6 +13,7 @@ mod ws;
 use axum::Router;
 use axum::routing::{delete, get, post};
 use std::net::SocketAddr;
+use std::time::Duration;
 use tokio::signal;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
@@ -49,6 +50,26 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(async move {
         while let Ok(update) = activity_updates.recv().await {
             activity_apns.deliver_update(&activity_db, &update).await;
+        }
+    });
+
+    // Heartbeat reaper. The daemon heartbeats every 5s, so 20s of silence
+    // means it is gone. Without this the hub had no periodic task at all and
+    // `last_heartbeat` was written but never compared, leaving a slept or
+    // force-quit Mac advertised as Online indefinitely.
+    let reaper_sessions = state.sessions.clone();
+    tokio::spawn(async move {
+        const REAP_INTERVAL: Duration = Duration::from_secs(10);
+        const MAX_SILENCE_SECS: i64 = 20;
+        let mut ticker = tokio::time::interval(REAP_INTERVAL);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            let reaped =
+                reaper_sessions.reap_stale_devices(chrono::Duration::seconds(MAX_SILENCE_SECS));
+            if reaped > 0 {
+                info!(count = reaped, "marked stale devices offline");
+            }
         }
     });
 

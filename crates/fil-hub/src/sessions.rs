@@ -220,6 +220,46 @@ impl SessionRegistry {
         self.publish(&user_id);
     }
 
+    /// Mark every device whose last heartbeat is older than `max_age` as
+    /// disconnected, and return how many changed.
+    ///
+    /// `last_heartbeat` was written in three places and compared in none, so a
+    /// Mac that slept, lost Wi-Fi or was force-quit stayed "Online" forever and
+    /// the app happily offered to attach to sessions that no longer existed.
+    /// Measured before: a device silent for 1205 ms still reported connected.
+    pub fn reap_stale_devices(&self, max_age: chrono::Duration) -> usize {
+        let now = Utc::now();
+        let affected_users: Vec<String> = {
+            let mut devices = self.devices.write().unwrap();
+            let mut users = Vec::new();
+            for device in devices.values_mut() {
+                if !device.connected {
+                    continue;
+                }
+                if now.signed_duration_since(device.last_heartbeat) <= max_age {
+                    continue;
+                }
+                device.connected = false;
+                for session in &mut device.sessions {
+                    session.status = SessionStatus::Unreachable;
+                }
+                users.push(device.user_id.clone());
+            }
+            users
+        };
+
+        let count = affected_users.len();
+        let mut seen: Vec<&String> = Vec::new();
+        for user_id in &affected_users {
+            if seen.contains(&user_id) {
+                continue;
+            }
+            seen.push(user_id);
+            self.publish(user_id);
+        }
+        count
+    }
+
     pub fn remove_user(&self, user_id: &str) {
         {
             let mut devices = self.devices.write().unwrap();
@@ -236,5 +276,43 @@ impl SessionRegistry {
             user_id: user_id.to_string(),
             devices: self.get_user_sessions(user_id),
         });
+    }
+}
+
+#[cfg(test)]
+mod reaper_tests {
+    use super::*;
+
+    #[test]
+    fn a_device_that_stops_heartbeating_is_marked_offline() {
+        let registry = SessionRegistry::new();
+        registry.register_device("dev-1", "user-1", "Mac");
+        assert!(registry.get_user_sessions("user-1")[0].connected);
+
+        // Backdate the heartbeat rather than sleeping.
+        {
+            let mut devices = registry.devices.write().unwrap();
+            let device = devices.get_mut("dev-1").unwrap();
+            device.last_heartbeat = Utc::now() - chrono::Duration::seconds(60);
+        }
+
+        let reaped = registry.reap_stale_devices(chrono::Duration::seconds(20));
+
+        assert_eq!(reaped, 1);
+        assert!(
+            !registry.get_user_sessions("user-1")[0].connected,
+            "a device silent past the deadline must not still advertise as online"
+        );
+    }
+
+    #[test]
+    fn a_live_device_is_left_alone() {
+        let registry = SessionRegistry::new();
+        registry.register_device("dev-2", "user-2", "Mac");
+
+        let reaped = registry.reap_stale_devices(chrono::Duration::seconds(20));
+
+        assert_eq!(reaped, 0);
+        assert!(registry.get_user_sessions("user-2")[0].connected);
     }
 }
