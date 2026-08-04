@@ -52,7 +52,8 @@ protocol TerminalTransport: AnyObject, Sendable {
     var onDisconnected: (@Sendable () -> Void)? { get set }
     var onBetterPathAvailable: (@Sendable () -> Void)? { get set }
 
-    func connect(sessionId: String, ticket: String?)
+    func connect(sessionId: String, ticket: String?, resumeFrom: UInt64)
+    var onStreamOffset: (@Sendable (UInt64) -> Void)? { get set }
     func disconnect()
     func sendInput(_ data: Data)
     func sendResize(cols: UInt16, rows: UInt16)
@@ -110,6 +111,9 @@ final class TerminalSession: @unchecked Sendable {
     /// Set while the app is backgrounded, so a late callback cannot resurrect
     /// the connection we deliberately released.
     private var isSuspended = false
+    /// Persisted across connections so a reattach replays only what the user
+    /// has not already seen.
+    private var resumeOffset: UInt64 = 0
 
     init(
         sessionId: String,
@@ -216,6 +220,9 @@ final class TerminalSession: @unchecked Sendable {
         client.onDataReceived = { [weak self] data in
             self?.outputRelay.enqueue(data)
         }
+        client.onStreamOffset = { [weak self] offset in
+            self?.lock.filWithLock { self?.resumeOffset = offset }
+        }
         client.onBetterPathAvailable = { [weak self] in
             // Network.framework QUIC does not migrate; rebuild on the new path.
             self?.reconnectNow()
@@ -239,7 +246,8 @@ final class TerminalSession: @unchecked Sendable {
             guard let client,
                   self.lock.filWithLock({ self.transport === client })
             else { return }
-            client.connect(sessionId: self.sessionId, ticket: ticket)
+            let resumeFrom = self.lock.filWithLock { self.resumeOffset }
+            client.connect(sessionId: self.sessionId, ticket: ticket, resumeFrom: resumeFrom)
         }
     }
 

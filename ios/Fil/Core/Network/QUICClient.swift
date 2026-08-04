@@ -30,6 +30,16 @@ final class QUICTerminalClient: @unchecked Sendable {
     /// connecting. Nil falls back to the unauthenticated v1 header so the app
     /// still works against a hub that predates ticket support.
     private var attachTicket: String?
+    /// Stream offset already rendered, so a reattach replays only the delta
+    /// instead of the whole 64 KB buffer. Zero means cold attach.
+    private var resumeOffset: UInt64 = 0
+    /// On a v2 stream the hub sends the current stream offset before any
+    /// terminal bytes; this consumes exactly those 8 bytes.
+    private var awaitingOffsetPrefix = false
+    private var offsetPrefixBuffer = Data()
+
+    /// Reported after each attach so the session can persist the cursor.
+    var onStreamOffset: (@Sendable (UInt64) -> Void)?
 
     init(hubHost: String, hubPort: UInt16 = 16433) {
         self.hubHost = hubHost
@@ -40,8 +50,13 @@ final class QUICTerminalClient: @unchecked Sendable {
         connect(sessionId: sessionId, ticket: nil)
     }
 
-    func connect(sessionId: String, ticket: String?) {
-        stateLock.filWithLock { attachTicket = ticket }
+    func connect(sessionId: String, ticket: String?, resumeFrom: UInt64 = 0) {
+        stateLock.filWithLock {
+            attachTicket = ticket
+            resumeOffset = resumeFrom
+            awaitingOffsetPrefix = ticket != nil
+            offsetPrefixBuffer.removeAll()
+        }
         let params = NWParameters(quic: makeQUICOptions())
 
         let endpoint = NWEndpoint.hostPort(
@@ -214,6 +229,9 @@ final class QUICTerminalClient: @unchecked Sendable {
             var ticketLen = UInt16(ticketData.count).bigEndian
             header.append(Data(bytes: &ticketLen, count: 2))
             header.append(ticketData)
+
+            var offset = stateLock.filWithLock { resumeOffset }.bigEndian
+            header.append(Data(bytes: &offset, count: 8))
         }
 
         let conn = stateLock.filWithLock { connection }
@@ -228,7 +246,7 @@ final class QUICTerminalClient: @unchecked Sendable {
         let conn = stateLock.filWithLock { connection }
         conn?.receive(minimumIncompleteLength: 1, maximumLength: 16384) { [weak self] data, _, isComplete, error in
             if let data, !data.isEmpty {
-                self?.onDataReceived?(data)
+                self?.deliver(data)
             }
             if isComplete || error != nil {
                 self?.reportDisconnected()
@@ -236,6 +254,33 @@ final class QUICTerminalClient: @unchecked Sendable {
             }
             self?.receiveLoop()
         }
+    }
+
+    /// Strips the v2 offset prefix before handing bytes to the terminal.
+    private func deliver(_ data: Data) {
+        var payload = data
+        let prefix: Data? = stateLock.filWithLock {
+            guard awaitingOffsetPrefix else { return nil }
+            offsetPrefixBuffer.append(payload)
+            guard offsetPrefixBuffer.count >= 8 else {
+                payload = Data()
+                return nil
+            }
+            let head = offsetPrefixBuffer.prefix(8)
+            payload = Data(offsetPrefixBuffer.dropFirst(8))
+            awaitingOffsetPrefix = false
+            offsetPrefixBuffer.removeAll()
+            return Data(head)
+        }
+
+        if let prefix {
+            let offset = prefix.reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+            stateLock.filWithLock { resumeOffset = offset }
+            onStreamOffset?(offset)
+        }
+
+        guard !payload.isEmpty else { return }
+        onDataReceived?(payload)
     }
 
     private func makeQUICOptions() -> NWProtocolQUIC.Options {

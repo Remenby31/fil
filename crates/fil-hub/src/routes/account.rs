@@ -73,6 +73,7 @@ mod tests {
             addr: SocketAddr::from(([127, 0, 0, 1], 0)),
             database_url: format!("sqlite:{}?mode=rwc", path.display()),
             jwt_secret: "test".into(),
+            require_attach_ticket: false,
             github_client_id: String::new(),
             github_client_secret: String::new(),
             apple_client_id: String::new(),

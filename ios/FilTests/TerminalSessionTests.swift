@@ -15,10 +15,13 @@ final class FakeTransport: TerminalTransport, @unchecked Sendable {
     private(set) var sentInput: [Data] = []
     private(set) var sentResizes: [(cols: UInt16, rows: UInt16)] = []
 
+    var onStreamOffset: (@Sendable (UInt64) -> Void)?
     private(set) var lastTicket: String?
-    func connect(sessionId: String, ticket: String?) {
+    private(set) var lastResumeFrom: UInt64 = 0
+    func connect(sessionId: String, ticket: String?, resumeFrom: UInt64) {
         connectCount += 1
         lastTicket = ticket
+        lastResumeFrom = resumeFrom
     }
     func disconnect() { disconnectCount += 1 }
     func sendInput(_ data: Data) { sentInput.append(data) }
