@@ -1,0 +1,16 @@
+[package]
+name = "fil-testclient"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "fil-testclient"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+quinn = { workspace = true }
+rustls = { workspace = true }
+anyhow = { workspace = true }
+clap = { version = "4", features = ["derive"] }

@@ -205,7 +205,7 @@ pub fn proxy_loop_sync(
             local_size = ws;
 
             if !remote_client_attached {
-                apply_window_size(master_fd, child_pid, ws);
+                apply_window_size(master_fd, ws);
             }
 
             let message = ProxyMessage::Resize {
@@ -217,7 +217,6 @@ pub fn proxy_loop_sync(
                     &mut daemon,
                     &mut remote_client_attached,
                     master_fd,
-                    child_pid,
                     local_size,
                 );
             }
@@ -240,7 +239,6 @@ pub fn proxy_loop_sync(
                     &mut daemon,
                     &mut remote_client_attached,
                     master_fd,
-                    child_pid,
                     local_size,
                 );
             }
@@ -255,15 +253,21 @@ pub fn proxy_loop_sync(
                             DaemonMessage::Input(data) => write_all(master_fd, &data),
                             DaemonMessage::Resize { cols, rows } => {
                                 if let Some(ws) = window_size_from_dimensions(cols, rows) {
-                                    apply_window_size(master_fd, child_pid, ws);
+                                    apply_window_size(master_fd, ws);
                                 }
                             }
                             DaemonMessage::ClientAttached => {
                                 remote_client_attached = true;
                             }
                             DaemonMessage::ClientDetached => {
-                                remote_client_attached = false;
-                                apply_window_size(master_fd, child_pid, local_size);
+                                // Mirror the guard in disconnect_daemon(): only
+                                // restore the local size if a remote client had
+                                // actually taken it over. An unsolicited detach
+                                // must never SIGWINCH the user's shell.
+                                if remote_client_attached {
+                                    remote_client_attached = false;
+                                    apply_window_size(master_fd, local_size);
+                                }
                             }
                         }
                     }
@@ -272,7 +276,6 @@ pub fn proxy_loop_sync(
                     &mut daemon,
                     &mut remote_client_attached,
                     master_fd,
-                    child_pid,
                     local_size,
                 ),
                 None => {}
@@ -284,7 +287,6 @@ pub fn proxy_loop_sync(
                 &mut daemon,
                 &mut remote_client_attached,
                 master_fd,
-                child_pid,
                 local_size,
             );
         }
@@ -314,7 +316,6 @@ pub fn proxy_loop_sync(
                     &mut daemon,
                     &mut remote_client_attached,
                     master_fd,
-                    child_pid,
                     local_size,
                 );
             }
@@ -416,9 +417,26 @@ fn window_size_from_dimensions(cols: u16, rows: u16) -> Option<libc::winsize> {
     })
 }
 
-fn apply_window_size(master_fd: i32, child_pid: Pid, ws: libc::winsize) {
+fn apply_window_size(master_fd: i32, ws: libc::winsize) {
+    // A no-op resize is still a SIGWINCH, and an inner ssh/tmux/TUI redraws on
+    // every one of them. Skip when the PTY already has these dimensions.
+    if current_window_size(master_fd)
+        .is_some_and(|cur| cur.ws_row == ws.ws_row && cur.ws_col == ws.ws_col)
+    {
+        return;
+    }
+    // TIOCSWINSZ already makes the kernel raise SIGWINCH on the tty's
+    // foreground process group when the dimensions actually change. Sending it
+    // again by hand delivered two signals per resize, so an inner ssh/tmux
+    // reflowed twice. The kernel's own signal also targets the foreground job
+    // rather than only the shell, which is what we want.
     unsafe { libc::ioctl(master_fd, libc::TIOCSWINSZ, &ws) };
-    signal::kill(child_pid, Signal::SIGWINCH).ok();
+}
+
+fn current_window_size(master_fd: i32) -> Option<libc::winsize> {
+    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+    let rc = unsafe { libc::ioctl(master_fd, libc::TIOCGWINSZ, &mut ws) };
+    (rc == 0).then_some(ws)
 }
 
 fn queue_daemon(daemon: &mut Option<DaemonConnection>, message: &ProxyMessage) -> bool {
@@ -432,13 +450,12 @@ fn disconnect_daemon(
     daemon: &mut Option<DaemonConnection>,
     remote_client_attached: &mut bool,
     master_fd: i32,
-    child_pid: Pid,
     local_size: libc::winsize,
 ) {
     *daemon = None;
     if *remote_client_attached {
         *remote_client_attached = false;
-        apply_window_size(master_fd, child_pid, local_size);
+        apply_window_size(master_fd, local_size);
     }
 }
 

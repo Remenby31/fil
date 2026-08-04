@@ -41,6 +41,10 @@ pub async fn start(
     tx
 }
 
+/// Matches the QUIC data path. A 30s cap meant a device could stay "offline"
+/// in the app for half a minute after a brief network hiccup.
+const MAX_BACKOFF_SECS: u64 = 5;
+
 async fn run_ws_loop(config: DaemonConfig, mut outgoing: mpsc::Receiver<proto::DaemonMessage>) {
     let mut backoff = 1u64;
 
@@ -87,7 +91,7 @@ async fn run_ws_loop(config: DaemonConfig, mut outgoing: mpsc::Receiver<proto::D
         }
 
         tokio::time::sleep(std::time::Duration::from_secs(backoff)).await;
-        backoff = (backoff * 2).min(30);
+        backoff = (backoff * 2).min(MAX_BACKOFF_SECS);
     }
 }
 

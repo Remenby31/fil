@@ -141,7 +141,7 @@ async fn handle_proxy(
     let read_task = async {
         let mut quic_tx = quic_tx;
         let mut quic_backpressured = false;
-        loop {
+        'read: loop {
             let mut tmp = [0u8; 16384];
             let n = reader.read(&mut tmp).await.unwrap_or(0);
             if n == 0 {
@@ -172,7 +172,10 @@ async fn handle_proxy(
                         sessions_ref.update_size(&sid, u32::from(cols), u32::from(rows));
                     }
                     ipc::MSG_DESTROYED => {
-                        break;
+                        // Leave the read loop, not just the frame-parsing loop:
+                        // a bare `break` here only finished the current buffer
+                        // and then went back to reading a dead session.
+                        break 'read;
                     }
                     _ => {}
                 }

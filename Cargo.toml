@@ -5,6 +5,7 @@ members = [
     "crates/fil-proxy",
     "crates/fil-daemon",
     "crates/fil-hub",
+    "crates/fil-testclient",
 ]
 
 [workspace.package]
