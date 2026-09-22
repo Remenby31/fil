@@ -36,10 +36,14 @@ async fn main() -> Result<()> {
     if !config.is_configured() {
         anyhow::bail!("fil is not configured. Run `fil setup` first.");
     }
+    let hub_origin = fil_protocol::tls::hub_url(&config.hub_url)
+        .map_err(anyhow::Error::msg)?
+        .origin()
+        .ascii_serialization();
 
     info!(
         device = %config.device_name,
-        hub = %config.hub_url,
+        hub = %hub_origin,
         "fil-daemon starting"
     );
 
