@@ -10,7 +10,7 @@ Access your Mac terminal sessions from your iPhone. Fil is the invisible thread 
 Mac (Ghostty/kitty/any terminal)
   └── fil (PTY proxy) ──── WebSocket ────► Hub (VPS/Docker) ◄──── iOS App
                                             session registry
-                                            E2E encrypted routing
+                                            TLS-protected routing
 ```
 
 1. **Install on your Mac**: `brew install fil && fil setup`
@@ -24,7 +24,7 @@ Mac (Ghostty/kitty/any terminal)
 | `fil` daemon | Rust | PTY proxy, launched by your terminal instead of bash |
 | `fil-hub` | Rust | Central server — session registry, auth, WebSocket routing |
 | iOS app | Swift (SwiftUI + TCA) | Native terminal client with SwiftTerm |
-| `fil-protocol` | Rust + Protobuf | Shared protocol definitions + E2E crypto |
+| `fil-protocol` | Rust + Protobuf | Shared messages, certificate pinning, experimental Noise primitives |
 
 ## Features
 
@@ -32,7 +32,7 @@ Mac (Ghostty/kitty/any terminal)
 - **Multi-machine** — all your Macs, one hub
 - **Smart notifications** — build finished, prompt waiting, errors
 - **Dynamic Island** — long-running processes on your lock screen
-- **E2E encrypted** — Noise Protocol (XX), ChaCha20-Poly1305
+- **Encrypted in transit** — authenticated QUIC with certificate pinning, with HTTPS/WebSocket fallback. The trusted hub relays plaintext and keeps a bounded in-memory replay buffer; this is not end-to-end encryption.
 - **Self-hostable** — one Docker command, your data stays yours
 
 ## Quick start
@@ -93,7 +93,7 @@ cd ios && xcodegen generate && open Fil.xcodeproj
 ├── crates/
 │   ├── fil-daemon/     # PTY proxy binary
 │   ├── fil-hub/        # Central server
-│   └── fil-protocol/   # Protobuf + E2E crypto
+│   └── fil-protocol/   # Protobuf + transport verification
 ├── ios/                # SwiftUI iOS app
 │   ├── Fil/            # App source
 │   ├── FilWidgets/     # Widget extension

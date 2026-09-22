@@ -4,9 +4,14 @@ import UIKit
 
 @main
 struct FilApp: App {
-    static let store = Store(initialState: AppFeature.State()) {
-        AppFeature()
-    }
+    static let store: StoreOf<AppFeature> = {
+        #if DEBUG && targetEnvironment(simulator)
+        SimulatorLaunchConfiguration.install()
+        #endif
+        return Store(initialState: AppFeature.State()) {
+            AppFeature()
+        }
+    }()
 
     @Environment(\.scenePhase) private var scenePhase
 
@@ -25,12 +30,65 @@ struct FilApp: App {
             case .active:
                 AppLifecycle.willEnterForeground()
                 FilApp.store.send(.didBecomeActive)
+                if case .main(let main) = FilApp.store.state, main.terminal != nil {
+                    FilApp.store.send(.main(.terminal(.presented(.refreshFollowingStatus))))
+                }
             default:
                 break
             }
         }
     }
 }
+
+#if DEBUG && targetEnvironment(simulator)
+/// Live QA only. Both the call site and this implementation are compiled out
+/// of physical-device builds (including Debug) and every Release build.
+/// Credentials are never logged; all traffic still uses the real hub/client.
+struct SimulatorLaunchConfiguration {
+    let hubURL: String
+    let token: String
+    let sessionURL: URL?
+
+    init?(environment: [String: String]) {
+        guard let hubURL = environment["FIL_TEST_HUB_URL"],
+              let hub = URLComponents(string: hubURL),
+              hub.scheme?.lowercased() == "https",
+              let host = hub.host, !host.isEmpty,
+              hub.user == nil, hub.password == nil,
+              hub.query == nil, hub.fragment == nil, hub.url != nil,
+              let token = environment["FIL_TEST_TOKEN"], !token.isEmpty,
+              token.rangeOfCharacter(from: .whitespacesAndNewlines) == nil else { return nil }
+
+        var sessionURL: URL?
+        if let sessionId = environment["FIL_TEST_SESSION_ID"] {
+            // A single explicit session identifier; never pick the first
+            // session or allow a path/query to select a different terminal.
+            let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
+            guard !sessionId.isEmpty,
+                  sessionId.rangeOfCharacter(from: allowed.inverted) == nil,
+                  let url = FilActivityURL.session(sessionId) else { return nil }
+            sessionURL = url
+        }
+        self.hubURL = hubURL
+        self.token = token
+        self.sessionURL = sessionURL
+    }
+
+    static func install() {
+        guard let configuration = Self(environment: ProcessInfo.processInfo.environment) else { return }
+        // Run before AppFeature.State chooses its authenticated root.
+        TokenStorage.saveHubUrl(configuration.hubURL)
+        TokenStorage.saveToken(configuration.token)
+        UserDefaults.standard.set(true, forKey: "hasSeenOnboarding")
+        // A previous Live Activity link must not select an unrelated terminal
+        // during QA. With no scratch ID this launch stays on Machines.
+        _ = FilSharedStore.takePendingActivityURL()
+        if let url = configuration.sessionURL {
+            FilSharedStore.savePendingActivityURL(url)
+        }
+    }
+}
+#endif
 
 /// Bridges scene phase to the connection layer.
 ///
@@ -42,6 +100,7 @@ struct FilApp: App {
 enum AppLifecycle {
     /// Reference box: the expiration handler has to be able to end the task
     /// without the identifier crossing an isolation boundary by value.
+    @MainActor
     private final class BackgroundTaskBox {
         var id: UIBackgroundTaskIdentifier = .invalid
     }
@@ -63,11 +122,12 @@ enum AppLifecycle {
             }
         }
 
-        TerminalConnectionRegistry.shared.applicationDidEnterBackground()
-
-        if box.id != .invalid {
-            app.endBackgroundTask(box.id)
-            box.id = .invalid
+        TerminalConnectionRegistry.shared.applicationDidEnterBackground {
+            Task { @MainActor in
+                guard box.id != .invalid else { return }
+                app.endBackgroundTask(box.id)
+                box.id = .invalid
+            }
         }
     }
 

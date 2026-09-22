@@ -1,9 +1,16 @@
 import SwiftUI
+import UIKit
 
 enum FilTheme {
     // MARK: - Adaptive App Colors
     static let void_ = Color(uiColor: .systemBackground)
     static let filGreen = Color(hex: 0x00D4AA)
+    /// Text/action accent, unlike the decorative brand green, also works on light surfaces.
+    static let filGreenText = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0, green: 0.83, blue: 0.67, alpha: 1)
+            : UIColor(red: 0, green: 0.40, blue: 0.32, alpha: 1)
+    })
     static let surface = Color(uiColor: .secondarySystemGroupedBackground)
     static let cloud = Color(uiColor: .label)
     static let depth = Color(uiColor: .secondarySystemBackground)

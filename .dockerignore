@@ -19,3 +19,21 @@ ios/*.xcresult
 
 .DS_Store
 *.log
+
+# Never send credentials or production backups to the build daemon.
+.env
+.env.*
+**/.env
+**/.env.*
+secrets
+**/secrets
+*.p8
+**/*.p8
+*.db*
+**/*.db*
+quic-key.der
+**/quic-key.der
+backups
+**/backups
+.claude
+._*

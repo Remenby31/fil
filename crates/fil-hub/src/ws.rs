@@ -13,20 +13,21 @@ use fil_protocol::proto;
 
 #[derive(Deserialize)]
 pub struct WsParams {
-    device_token: String,
     device_id: String,
 }
 
 pub async fn ws_handler(
+    auth: crate::auth::AuthUser,
     ws: WebSocketUpgrade,
     Query(params): Query<WsParams>,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     // Validate the device exists
     let device = sqlx::query_as::<_, (String, String, String)>(
-        "SELECT d.id, d.user_id, d.name FROM devices d WHERE d.id = ?",
+        "SELECT d.id, d.user_id, d.name FROM devices d WHERE d.id = ? AND d.user_id = ?",
     )
     .bind(&params.device_id)
+    .bind(&auth.user_id)
     .fetch_optional(&state.db.pool)
     .await;
 
@@ -77,10 +78,8 @@ async fn handle_socket(
                 debug!(device_id = %device_id, "WebSocket closed by client");
                 break;
             }
-            Ok(Message::Ping(data)) => {
-                if sender.send(Message::Pong(data)).await.is_err() {
-                    break;
-                }
+            Ok(Message::Ping(data)) if sender.send(Message::Pong(data.clone())).await.is_err() => {
+                break;
             }
             Err(e) => {
                 debug!(device_id = %device_id, error = %e, "WebSocket error");
@@ -127,9 +126,15 @@ async fn handle_daemon_message(
             );
         }
         proto::daemon_message::Payload::SessionDestroyed(destroyed) => {
-            state
+            let removed = state
                 .sessions
                 .remove_session(device_id, &destroyed.session_id);
+            if removed {
+                state
+                    .quic_router
+                    .forget_session(&destroyed.session_id)
+                    .await;
+            }
             debug!(session_id = %destroyed.session_id, "session destroyed");
         }
         proto::daemon_message::Payload::Heartbeat(heartbeat) => {
@@ -148,7 +153,10 @@ async fn handle_daemon_message(
                     created_at: DateTime::from_timestamp(s.created_at, 0).unwrap_or_else(Utc::now),
                 })
                 .collect();
-            state.sessions.update_heartbeat(device_id, sessions);
+            let removed = state.sessions.update_heartbeat(device_id, sessions);
+            for session_id in removed {
+                state.quic_router.forget_session(&session_id).await;
+            }
             debug!(
                 device_id = %device_id,
                 session_count = heartbeat.sessions.len(),
@@ -164,9 +172,12 @@ async fn handle_daemon_message(
             );
         }
         proto::daemon_message::Payload::SessionResize(resize) => {
-            state
-                .sessions
-                .update_session_size(&resize.session_id, resize.cols, resize.rows);
+            state.sessions.update_device_session_size(
+                device_id,
+                &resize.session_id,
+                resize.cols,
+                resize.rows,
+            );
             debug!(
                 session_id = %resize.session_id,
                 cols = resize.cols,
@@ -175,5 +186,118 @@ async fn handle_daemon_message(
             );
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+
+    async fn state() -> AppState {
+        let state = crate::state::test_state().await;
+        for (device, user, sid) in [
+            ("victim-device", "victim-user", "victim"),
+            ("other-device", "other-user", "other"),
+        ] {
+            state.sessions.register_device(device, user, device);
+            state.sessions.add_session(
+                device,
+                SessionInfo {
+                    session_id: sid.into(),
+                    device_id: device.into(),
+                    shell: "sh".into(),
+                    command: String::new(),
+                    cwd: "/tmp".into(),
+                    cols: 80,
+                    rows: 24,
+                    status: SessionStatus::Online,
+                    created_at: Utc::now(),
+                },
+            );
+            state
+                .quic_router
+                .forward_to_clients(sid, sid.as_bytes())
+                .await;
+        }
+        state
+    }
+
+    async fn output(state: &AppState, sid: &str) -> Vec<u8> {
+        let (id, _, _, bytes, _) = state.quic_router.attach_client(sid, None).await;
+        state.quic_router.detach_client(sid, id).await;
+        bytes
+    }
+
+    #[tokio::test]
+    async fn foreign_destroy_does_not_touch_registry_or_router() {
+        let state = state().await;
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        state.quic_router.register_daemon_input("victim", tx).await;
+        let message = proto::DaemonMessage {
+            payload: Some(proto::daemon_message::Payload::SessionDestroyed(
+                proto::SessionDestroyed {
+                    session_id: "victim".into(),
+                    ..Default::default()
+                },
+            )),
+        };
+        handle_daemon_message(&message, "other-device", "other-user", &state).await;
+        assert!(state.sessions.owns_session("victim-user", "victim"));
+        assert_eq!(output(&state, "victim").await, b"victim");
+        state
+            .quic_router
+            .send_to_daemon("victim", b"still routed")
+            .await;
+        assert!(
+            matches!(rx.try_recv(), Ok(crate::quic::DaemonCommand::Input(data)) if data == b"still routed")
+        );
+        handle_daemon_message(&message, "victim-device", "victim-user", &state).await;
+        assert!(!state.sessions.owns_session("victim-user", "victim"));
+        assert!(output(&state, "victim").await.is_empty());
+        assert!(rx.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn foreign_resize_cannot_change_victim_dimensions() {
+        let state = state().await;
+        let message = proto::DaemonMessage {
+            payload: Some(proto::daemon_message::Payload::SessionResize(
+                proto::SessionResize {
+                    session_id: "victim".into(),
+                    cols: 1,
+                    rows: 1,
+                },
+            )),
+        };
+        handle_daemon_message(&message, "other-device", "other-user", &state).await;
+        let victim = &state.sessions.get_user_sessions("victim-user")[0].sessions[0];
+        assert_eq!((victim.cols, victim.rows), (80, 24));
+        handle_daemon_message(&message, "victim-device", "victim-user", &state).await;
+        let victim = &state.sessions.get_user_sessions("victim-user")[0].sessions[0];
+        assert_eq!((victim.cols, victim.rows), (1, 1));
+    }
+
+    #[tokio::test]
+    async fn heartbeat_forgets_only_its_own_removed_routes_and_buffers() {
+        let state = state().await;
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        state.quic_router.register_daemon_input("other", tx).await;
+        let message = proto::DaemonMessage {
+            payload: Some(proto::daemon_message::Payload::Heartbeat(
+                proto::Heartbeat {
+                    sessions: vec![proto::SessionInfo {
+                        session_id: "victim".into(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            )),
+        };
+        handle_daemon_message(&message, "other-device", "other-user", &state).await;
+        assert!(output(&state, "other").await.is_empty());
+        assert!(rx.recv().await.is_none());
+        assert_eq!(output(&state, "victim").await, b"victim");
+        assert!(state.sessions.owns_session("victim-user", "victim"));
+        assert!(!state.sessions.owns_session("other-user", "victim"));
     }
 }

@@ -8,4 +8,4 @@ pub use account::delete_account;
 pub use devices::{delete_device, list_devices, register_device};
 pub use health::health_check;
 pub use live_activities::{delete_live_activity, register_live_activity};
-pub use sessions::{create_session_ticket, list_sessions};
+pub use sessions::{create_daemon_ticket, create_session_ticket, list_sessions};

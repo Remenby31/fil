@@ -28,11 +28,11 @@ const title = "Privacy Policy — Fil";
         <li><strong>Session metadata</strong>: shell type, working directory, session duration. Used to display your active sessions.</li>
       </ul>
 
-      <h2>What Fil does NOT collect</h2>
+      <h2>Terminal content and transport</h2>
+      <p>Terminal input and output are encrypted in transit between your devices and the hub. The hub decrypts and relays this content and keeps a bounded in-memory replay buffer for reconnection. This is not end-to-end encryption; use a hub whose operator you trust. Anyone controlling the hub may access terminal content.</p>
+      <h2>Other data</h2>
       <ul>
-        <li><strong>Terminal content</strong>: your terminal data is end-to-end encrypted. The hub routes encrypted bytes without ever reading them.</li>
-        <li><strong>Commands</strong>: we cannot see what you type or what your terminal outputs.</li>
-        <li><strong>Files</strong>: we never access your filesystem.</li>
+        <li><strong>Files</strong>: Fil does not upload your filesystem. Commands run through a terminal retain the permissions of that terminal.</li>
         <li><strong>Analytics/tracking</strong>: no third-party analytics, no tracking pixels, no ads.</li>
       </ul>
 

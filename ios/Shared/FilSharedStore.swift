@@ -44,7 +44,7 @@ public struct FilWidgetSnapshot: Codable, Hashable, Sendable {
     }
 
     public var activeSessions: [FilWidgetSessionSnapshot] {
-        machines.flatMap(\.sessions)
+        machines.filter(\.isConnected).flatMap(\.sessions)
     }
 
     public var connectedMachineCount: Int {
@@ -54,12 +54,39 @@ public struct FilWidgetSnapshot: Codable, Hashable, Sendable {
 
 public enum FilSharedStore {
     public static let appGroupID = "group.sh.fil.shared"
+    public static let activityPrivacyKey = "activityDisplayPrivacy"
+    public static let activityPrivacyRevisionKey = "activityDisplayPrivacyRevision"
     private static let widgetSnapshotKey = "widgetSnapshot"
     private static let terminalFontSizeKey = "terminalFontSize"
     private static let pendingActivityURLKey = "pendingActivityURL"
 
     private static var defaults: UserDefaults {
         UserDefaults(suiteName: appGroupID) ?? .standard
+    }
+
+    /// No fallback to a process's unrelated preferences for sensitive display policy.
+    public static var activityPrivacyDefaults: UserDefaults? {
+        UserDefaults(suiteName: appGroupID)
+    }
+
+    public static var activityPrivacy: FilActivityPrivacy {
+        guard let rawValue = activityPrivacyDefaults?.string(forKey: activityPrivacyKey) else {
+            return .private_
+        }
+        return FilActivityPrivacy(rawValue: rawValue) ?? .private_
+    }
+
+    public static var activityPrivacyRevision: String {
+        activityPrivacyDefaults?.string(forKey: activityPrivacyRevisionKey) ?? "unconfigured"
+    }
+
+    public static func saveActivityPrivacy(_ privacy: FilActivityPrivacy) {
+        guard let defaults = activityPrivacyDefaults else { return }
+        guard defaults.string(forKey: activityPrivacyKey) != privacy.rawValue else { return }
+        // Invalidate existing disclosure ceilings before making any policy change.
+        defaults.set(UUID().uuidString, forKey: activityPrivacyRevisionKey)
+        defaults.set(privacy.rawValue, forKey: activityPrivacyKey)
+        WidgetCenter.shared.reloadTimelines(ofKind: "FilWidget")
     }
 
     public static var terminalFontSize: Double {

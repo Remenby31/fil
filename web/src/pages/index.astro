@@ -1,6 +1,6 @@
 ---
 const title = "Fil — Your terminals, everywhere.";
-const description = "Access your Mac terminal sessions from your iPhone. QUIC transport, E2E encrypted, built in Rust.";
+const description = "Access your Mac terminal sessions from your iPhone. Authenticated QUIC and HTTPS transport, built in Rust.";
 ---
 
 <html lang="en">
@@ -38,7 +38,7 @@ const description = "Access your Mac terminal sessions from your iPhone. QUIC tr
 
   <!-- Hero -->
   <section class="hero">
-    <div class="hero-badge reveal">QUIC transport · E2E encrypted · Open source</div>
+    <div class="hero-badge reveal">QUIC + HTTPS · Encrypted in transit · Open source</div>
     <h1 class="reveal">Your terminals,<br><em>everywhere</em>.</h1>
     <p class="reveal delay-1">Open a terminal on your Mac. Pick it up on your iPhone.<br>One invisible thread connecting your sessions across devices.</p>
 
@@ -107,8 +107,8 @@ const description = "Access your Mac terminal sessions from your iPhone. QUIC tr
         <div class="feature-icon-wrap">
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
         </div>
-        <h3>E2E encrypted</h3>
-        <p>The hub can't read your data. Nobody can.</p>
+        <h3>Encrypted in transit</h3>
+        <p>Authenticated connections protect your traffic. Use a hub you trust: it relays terminal content.</p>
       </div>
       <div class="feature-card reveal">
         <div class="feature-icon-wrap">
@@ -130,15 +130,15 @@ const description = "Access your Mac terminal sessions from your iPhone. QUIC tr
         </div>
         <div class="stack-label">Transport</div>
         <div class="stack-name">QUIC</div>
-        <div class="stack-desc">Faster than TCP. Survives network switches.</div>
+        <div class="stack-desc">Low-latency transport with HTTPS fallback and automatic reconnection.</div>
       </div>
       <div class="stack-item">
         <div class="stack-logo">
           <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="rgba(250,250,250,0.5)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/><circle cx="12" cy="17" r="1" fill="rgba(250,250,250,0.5)"/></svg>
         </div>
         <div class="stack-label">Encryption</div>
-        <div class="stack-name">Noise Protocol</div>
-        <div class="stack-desc">Your data stays yours. Always.</div>
+        <div class="stack-name">TLS</div>
+        <div class="stack-desc">Protected transport to a trusted, self-hostable hub.</div>
       </div>
       <div class="stack-item">
         <div class="stack-logo">

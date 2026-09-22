@@ -2,7 +2,7 @@ use crate::config::DaemonConfig;
 use crate::hub_quic::QuicHub;
 use crate::hub_ws;
 use crate::process_metadata;
-use crate::session_manager::{ProxyCommand, SessionManager};
+use crate::session_manager::{ProxyCommand, ProxySession, SessionManager};
 use anyhow::Result;
 use fil_protocol::ipc::{self, DaemonMessage, FrameReader};
 use fil_protocol::proto;
@@ -86,16 +86,15 @@ async fn handle_proxy(
     let (proxy_tx, mut proxy_rx) = mpsc::channel::<ProxyCommand>(256);
 
     // Register session
-    sessions.add(
-        session_id.clone(),
-        shell.clone(),
-        metadata.command.clone(),
-        metadata.cwd.clone(),
-        metadata.created_at,
+    sessions.add(ProxySession {
+        session_id: session_id.clone(),
+        shell: shell.clone(),
+        command: metadata.command.clone(),
+        cwd: metadata.cwd.clone(),
+        created_at: metadata.created_at,
         cols,
         rows,
-        proxy_tx.clone(),
-    );
+    });
 
     // Notify hub via WebSocket
     let created_msg = hub_ws::build_session_created(

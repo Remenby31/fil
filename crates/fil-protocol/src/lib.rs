@@ -4,3 +4,4 @@ pub mod proto {
 
 pub mod crypto;
 pub mod ipc;
+pub mod tls;

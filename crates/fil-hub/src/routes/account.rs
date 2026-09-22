@@ -8,6 +8,11 @@ use crate::state::AppState;
 pub async fn delete_account(auth: AuthUser, State(state): State<AppState>) -> StatusCode {
     match delete_account_data(&state, &auth.user_id).await {
         Ok(true) => {
+            for device in state.sessions.get_user_sessions(&auth.user_id) {
+                for session in device.sessions {
+                    state.quic_router.forget_session(&session.session_id).await;
+                }
+            }
             state.sessions.remove_user(&auth.user_id);
             info!(user_id = %auth.user_id, "account deleted");
             StatusCode::NO_CONTENT
@@ -77,8 +82,6 @@ mod tests {
             github_client_id: String::new(),
             github_client_secret: String::new(),
             apple_client_id: String::new(),
-            apple_team_id: String::new(),
-            apple_key_id: String::new(),
             public_url: "http://localhost".into(),
             quic_port: 0,
             data_dir: std::env::temp_dir().display().to_string(),

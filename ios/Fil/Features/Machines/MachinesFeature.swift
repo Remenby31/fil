@@ -7,7 +7,9 @@ struct MachinesFeature {
     struct State: Equatable {
         var machines: [Machine] = []
         var isLoading = false
-        var isConnected = true
+        // A saved token permits an offline bootstrap, not a claim that the
+        // hub has authenticated us. The first snapshot verifies that.
+        var isConnected = false
         var errorMessage: String?
         var pendingSessionId: String?
         @Presents var terminal: TerminalFeature.State?
@@ -25,6 +27,7 @@ struct MachinesFeature {
         case sessionTapped(Session)
         case terminal(PresentationAction<TerminalFeature.Action>)
         case logoutTapped
+        case loginRequired
         case dismissError
     }
 
@@ -39,7 +42,7 @@ struct MachinesFeature {
                 return .merge(loadMachines(), startEventStream())
 
             case .onDisappear:
-                return .cancel(id: CancelID.events)
+                return .merge(.cancel(id: CancelID.events), .cancel(id: CancelID.snapshot))
 
             case .didBecomeActive:
                 // iOS tears down URLSession websockets while suspended, and
@@ -60,22 +63,32 @@ struct MachinesFeature {
             case .sessionsLoaded(.success(let machines)):
                 state.isLoading = false
                 state.isConnected = true
+                state.errorMessage = nil
                 state.machines = machines
+                refreshTerminalMetadata(&state)
                 let pendingEffect = resolvePendingSession(&state)
-                return .merge(pendingEffect, persistWidgetSnapshot(machines))
+                persistWidgetSnapshot(machines)
+                return pendingEffect
 
             case .sessionsLoaded(.failure(let error)):
                 state.isLoading = false
                 state.isConnected = false
+                if Self.requiresLogin(error) {
+                    state.errorMessage = nil
+                    return .send(.loginRequired)
+                }
                 state.errorMessage = error.localizedDescription
                 return .none
 
             case .liveStatesReceived(let states):
                 state.isConnected = true
+                state.errorMessage = nil
                 let machines = Self.map(states)
                 state.machines = machines
+                refreshTerminalMetadata(&state)
                 let pendingEffect = resolvePendingSession(&state)
-                return .merge(pendingEffect, persistWidgetSnapshot(machines))
+                persistWidgetSnapshot(machines)
+                return pendingEffect
 
             case .liveStreamFailed:
                 state.isConnected = false
@@ -107,15 +120,10 @@ struct MachinesFeature {
             case .terminal:
                 return .none
 
-            case .logoutTapped:
+            case .logoutTapped, .loginRequired:
                 return .merge(
                     .cancel(id: CancelID.events),
-                    .run { _ in
-                        FilSharedStore.clearWidgetSnapshot()
-                        if #available(iOS 16.2, *) {
-                            await FilActivityManager.shared.endAllImmediately()
-                        }
-                    }
+                    .cancel(id: CancelID.snapshot)
                 )
 
             case .dismissError:
@@ -128,17 +136,27 @@ struct MachinesFeature {
         }
     }
 
-    private enum CancelID { case events }
+    private enum CancelID { case events, snapshot }
+
+    private static func requiresLogin(_ error: Error) -> Bool {
+        guard case HubError.httpError(let status) = error else { return false }
+        return status == 401 || status == 403
+    }
 
     /// `cancelInFlight` makes this safe to call repeatedly: a second start
     /// replaces the first rather than running two streams.
     private func startEventStream() -> Effect<Action> {
         .run { send in
             for await result in sessionEvents.updates() {
+                guard !Task.isCancelled else { return }
                 switch result {
                 case .success(let states):
                     await send(.liveStatesReceived(states))
-                case .failure:
+                case .failure(let error):
+                    if Self.requiresLogin(error) {
+                        await send(.loginRequired)
+                        return
+                    }
                     await send(.liveStreamFailed)
                 }
             }
@@ -149,32 +167,58 @@ struct MachinesFeature {
     private func loadMachines() -> Effect<Action> {
         .run { send in
             do {
-                await send(.sessionsLoaded(.success(try await hubClient.fetchMachines())))
+                let machines = try await hubClient.fetchMachines()
+                guard !Task.isCancelled else { return }
+                await send(.sessionsLoaded(.success(machines)))
             } catch {
+                guard !Task.isCancelled else { return }
                 await send(.sessionsLoaded(.failure(error)))
             }
         }
+        .cancellable(id: CancelID.snapshot, cancelInFlight: true)
     }
 
-    private func persistWidgetSnapshot(_ machines: [Machine]) -> Effect<Action> {
-        .run { _ in
-            let snapshots = machines.map { machine in
-                FilWidgetMachineSnapshot(
-                    id: machine.id,
-                    name: machine.displayName,
-                    isConnected: machine.status == .online,
-                    sessions: machine.activeSessions.map { session in
-                        FilWidgetSessionSnapshot(
-                            id: session.id,
-                            projectName: session.projectName,
-                            processName: session.processName,
-                            machineName: machine.displayName
-                        )
-                    }
-                )
-            }
-            FilSharedStore.saveWidgetSnapshot(.init(machines: snapshots))
+    private func persistWidgetSnapshot(_ machines: [Machine]) {
+        // Serialize this small cache write with logout's clear. An unscoped
+        // async effect could otherwise restore the previous account's cache.
+        let snapshots = machines.map { machine in
+            FilWidgetMachineSnapshot(
+                id: machine.id,
+                name: machine.displayName,
+                isConnected: machine.status == .online,
+                sessions: machine.activeSessions.map { session in
+                    FilWidgetSessionSnapshot(
+                        id: session.id,
+                        projectName: session.projectName,
+                        processName: session.processName,
+                        machineName: machine.displayName
+                    )
+                }
+            )
         }
+        FilSharedStore.saveWidgetSnapshot(.init(machines: snapshots))
+    }
+
+    private func refreshTerminalMetadata(_ state: inout State) {
+        guard var terminal = state.terminal else { return }
+        let contexts = state.machines.flatMap { machine in
+            machine.activeSessions.map { TerminalSessionContext(session: $0, machineName: machine.displayName) }
+        }
+        if let current = contexts.first(where: {
+            $0.id == terminal.session.id && $0.session.deviceId == terminal.session.deviceId
+        }) {
+            var session = current.session
+            // Geometry belongs to the live phone view, not the list snapshot.
+            session.cols = terminal.session.cols
+            session.rows = terminal.session.rows
+            terminal.session = session
+            terminal.machineName = current.machineName
+        }
+        terminal.availableSessions = contexts
+        terminal.otherSessionCount = max(0, contexts.count - (contexts.contains { $0.id == terminal.session.id } ? 1 : 0))
+        // Preserve reducer-local connection/follow state and relay ownership.
+        // Never select a different terminal when this ID disappears.
+        state.terminal = terminal
     }
 
     private func resolvePendingSession(_ state: inout State) -> Effect<Action> {

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonConfig {
     #[serde(default = "default_hub_url")]
     pub hub_url: String,
@@ -27,8 +27,24 @@ fn default_quic_port() -> u16 {
     16433
 }
 
+impl Default for DaemonConfig {
+    fn default() -> Self {
+        Self {
+            hub_url: default_hub_url(),
+            quic_port: default_quic_port(),
+            quic_host: String::new(),
+            token: String::new(),
+            device_id: String::new(),
+            device_name: String::new(),
+        }
+    }
+}
+
 impl DaemonConfig {
     pub fn config_dir() -> PathBuf {
+        if let Some(dir) = std::env::var_os("FIL_CONFIG_DIR") {
+            return PathBuf::from(dir);
+        }
         dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("~/.config"))
             .join("fil")

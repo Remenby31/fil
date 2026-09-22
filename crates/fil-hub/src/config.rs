@@ -16,14 +16,10 @@ pub struct Config {
     pub github_client_id: String,
     pub github_client_secret: String,
     pub apple_client_id: String,
-    pub apple_team_id: String,
-    pub apple_key_id: String,
     pub public_url: String,
     pub quic_port: u16,
     pub data_dir: String,
-    /// Reject unauthenticated v1 QUIC attaches. Defaults to false so a hub can
-    /// be deployed before the app that mints tickets; flip it once the fleet
-    /// has upgraded, which fully closes the data plane.
+    /// Reject unauthenticated legacy streams on both sides of the data plane.
     pub require_attach_ticket: bool,
     pub apns: Option<ApnsConfig>,
 }
@@ -47,9 +43,8 @@ impl Config {
             }),
             github_client_id: std::env::var("GITHUB_CLIENT_ID").unwrap_or_default(),
             github_client_secret: std::env::var("GITHUB_CLIENT_SECRET").unwrap_or_default(),
-            apple_client_id: std::env::var("APPLE_CLIENT_ID").unwrap_or_default(),
-            apple_team_id: std::env::var("APPLE_TEAM_ID").unwrap_or_default(),
-            apple_key_id: std::env::var("APPLE_KEY_ID").unwrap_or_default(),
+            apple_client_id: std::env::var("APPLE_CLIENT_ID")
+                .unwrap_or_else(|_| "sh.fil.app".into()),
             public_url: std::env::var("PUBLIC_URL")
                 .unwrap_or_else(|_| format!("http://localhost:{port}")),
             quic_port: std::env::var("QUIC_PORT")
@@ -59,7 +54,7 @@ impl Config {
             data_dir: std::env::var("DATA_DIR").unwrap_or_else(|_| ".".to_string()),
             require_attach_ticket: std::env::var("FIL_REQUIRE_ATTACH_TICKET")
                 .map(|v| matches!(v.as_str(), "1" | "true" | "yes"))
-                .unwrap_or(false),
+                .unwrap_or(true),
             apns: apns_from_env(),
         }
     }

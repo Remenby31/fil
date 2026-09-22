@@ -48,7 +48,6 @@ pub struct LiveActivityRegistration {
     pub activity_id: String,
     pub user_id: String,
     pub session_id: String,
-    pub device_id: String,
     pub push_token: String,
     pub environment: String,
 }
@@ -63,6 +62,7 @@ enum PushDisposition {
 impl ApnsClient {
     pub fn new(config: Option<ApnsConfig>) -> Result<Self> {
         let http = Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
             .http2_prior_knowledge()
             .http2_keep_alive_interval(std::time::Duration::from_secs(30))
             .build()?;
@@ -122,13 +122,12 @@ impl ApnsClient {
                 }
             };
 
-            if event == "end" || disposition == PushDisposition::InvalidToken {
-                if let Err(error) =
+            if (event == "end" || disposition == PushDisposition::InvalidToken)
+                && let Err(error) =
                     delete_registration(pool, &registration.activity_id, &registration.user_id)
                         .await
-                {
-                    warn!(%error, activity_id = %registration.activity_id, "failed to delete stale Live Activity registration");
-                }
+            {
+                warn!(%error, activity_id = %registration.activity_id, "failed to delete stale Live Activity registration");
             }
         }
     }

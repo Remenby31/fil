@@ -41,14 +41,4 @@ impl QuicCerts {
         info!("generated new QUIC certificates");
         Ok(Self { cert_der, key_der })
     }
-
-    pub fn fingerprint(&self) -> String {
-        use std::fmt::Write;
-        let hash = ring::digest::digest(&ring::digest::SHA256, &self.cert_der);
-        let mut hex = String::new();
-        for byte in hash.as_ref() {
-            write!(hex, "{byte:02x}").ok();
-        }
-        hex
-    }
 }

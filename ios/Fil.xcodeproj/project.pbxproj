@@ -20,6 +20,7 @@
 		56B84B52B3D4E9F2994C92BB /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 016799636AB57E35AAD48B7C /* SettingsView.swift */; };
 		585A63B3A3643A77A01AE3C5 /* FilNotification.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0A495137D637D6F090DB9CC /* FilNotification.swift */; };
 		5ABBD870DB5F7556E3FDEC9D /* FilWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 581679C5AD614C0390AD779F /* FilWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		5BA4130143D85D73EC3AEEAE /* TerminalConnectionSpeedTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08E11B23F0EFD1A4C37E450D /* TerminalConnectionSpeedTests.swift */; };
 		5F9834C91A5CFD915E550068 /* FilSharedStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1432184E2DB1D683F9AFF01F /* FilSharedStore.swift */; };
 		6416557D9B1011085DF0EFFA /* FilWidgets.swift in Sources */ = {isa = PBXBuildFile; fileRef = D78B13EF942C2AB03E809F12 /* FilWidgets.swift */; };
 		6598D39D8A9E8890F4EF5738 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 268AFD9D51281769AA6DCE4B /* OnboardingView.swift */; };
@@ -85,6 +86,7 @@
 		016799636AB57E35AAD48B7C /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		04EE267190F3F78D3C3C58A8 /* GitHubAuthService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHubAuthService.swift; sourceTree = "<group>"; };
 		0883302297AD571E71FD7B04 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		08E11B23F0EFD1A4C37E450D /* TerminalConnectionSpeedTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalConnectionSpeedTests.swift; sourceTree = "<group>"; };
 		1432184E2DB1D683F9AFF01F /* FilSharedStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilSharedStore.swift; sourceTree = "<group>"; };
 		17D5937E880C8923D4D2F5E5 /* Fil.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Fil.entitlements; sourceTree = "<group>"; };
 		268AFD9D51281769AA6DCE4B /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
@@ -280,6 +282,7 @@
 		D2081DF4A5FA1101DC77176E /* FilTests */ = {
 			isa = PBXGroup;
 			children = (
+				08E11B23F0EFD1A4C37E450D /* TerminalConnectionSpeedTests.swift */,
 				FE5677E717AB2F879DC39F68 /* TerminalSessionTests.swift */,
 			);
 			path = FilTests;
@@ -483,6 +486,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				5BA4130143D85D73EC3AEEAE /* TerminalConnectionSpeedTests.swift in Sources */,
 				250E3FCCDCE0543A4E0D3388 /* TerminalSessionTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -584,7 +588,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 24;
+				CURRENT_PROJECT_VERSION = 28;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = 3SNT64YKAS;
 				ENABLE_NS_ASSERTIONS = NO;
@@ -710,7 +714,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 24;
+				CURRENT_PROJECT_VERSION = 28;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = 3SNT64YKAS;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;

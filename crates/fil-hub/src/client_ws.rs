@@ -6,7 +6,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use tracing::debug;
 
-use crate::auth::verify_token;
+use crate::auth::authenticate_token;
 use crate::state::AppState;
 
 #[derive(Deserialize)]
@@ -19,11 +19,11 @@ pub async fn client_ws_handler(
     Query(params): Query<ClientWsParams>,
     State(state): State<AppState>,
 ) -> Response {
-    let claims = match verify_token(&params.token, &state.config.jwt_secret) {
-        Ok(claims) => claims,
+    let auth = match authenticate_token(&params.token, &state).await {
+        Ok(auth) => auth,
         Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
     };
-    ws.on_upgrade(move |socket| client_socket(socket, claims.sub, state))
+    ws.on_upgrade(move |socket| client_socket(socket, auth.user_id, state))
 }
 
 async fn client_socket(socket: WebSocket, user_id: String, state: AppState) {
@@ -54,9 +54,7 @@ async fn client_socket(socket: WebSocket, user_id: String, state: AppState) {
             }
             message = receiver.next() => {
                 match message {
-                    Some(Ok(Message::Ping(data))) => {
-                        if sender.send(Message::Pong(data)).await.is_err() { break; }
-                    }
+                    Some(Ok(Message::Ping(data))) if sender.send(Message::Pong(data.clone())).await.is_err() => break,
                     Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
                     _ => {}
                 }

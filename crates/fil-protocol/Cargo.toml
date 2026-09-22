@@ -16,6 +16,7 @@ snow = "0.9"
 rand = "0.9"
 base64 = "0.22"
 libc = "0.2"
+rustls = { workspace = true }
 
 [build-dependencies]
 prost-build = "0.13"

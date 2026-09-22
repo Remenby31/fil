@@ -1,8 +1,10 @@
 import ActivityKit
 import SwiftUI
+import UIKit
 
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
 
     @State private var hubURL = TokenStorage.loadHubUrl()
     @State private var terminalFontSize = FilSharedStore.terminalFontSize
@@ -13,8 +15,11 @@ struct SettingsView: View {
     @State private var showSetupGuide = false
     @State private var isDeletingAccount = false
     @State private var accountError: String?
-    @State private var hubStatusMessage: String?
+    @State private var hubWasSaved: Bool?
     @State private var liveActivityPushEnabled: Bool?
+    @State private var systemAllowsLiveActivities = ActivityAuthorizationInfo().areActivitiesEnabled
+    @State private var isApplyingPrivacy = false
+    @State private var isSigningOut = false
 
     let onLogout: () -> Void
 
@@ -27,6 +32,7 @@ struct SettingsView: View {
                 accountSection
                 aboutSection
             }
+            .disabled(isDeletingAccount || isSigningOut)
             .scrollContentBackground(.hidden)
             .background(Color(uiColor: .systemGroupedBackground))
             .navigationTitle("Settings")
@@ -39,10 +45,16 @@ struct SettingsView: View {
         }
         .presentationDetents([.large])
         .presentationDragIndicator(.visible)
+        .interactiveDismissDisabled(isApplyingPrivacy || isDeletingAccount || isSigningOut)
         .confirmationDialog("Sign out of Fil?", isPresented: $showLogoutConfirmation) {
             Button("Sign Out", role: .destructive) {
-                onLogout()
-                dismiss()
+                isSigningOut = true
+                Task {
+                    await FilActivityManager.shared.endAllImmediately()
+                    FilSharedStore.clearWidgetSnapshot()
+                    onLogout()
+                    dismiss()
+                }
             }
         }
         .confirmationDialog(
@@ -67,6 +79,11 @@ struct SettingsView: View {
         .task {
             liveActivityPushEnabled = try? await HubClient().health().liveActivityPushEnabled
         }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
+                systemAllowsLiveActivities = ActivityAuthorizationInfo().areActivitiesEnabled
+            }
+        }
     }
 
     private var connectionSection: some View {
@@ -81,10 +98,10 @@ struct SettingsView: View {
                 saveHubURL()
             }
 
-            if let hubStatusMessage {
-                Text(hubStatusMessage)
+            if let hubWasSaved {
+                Text(hubWasSaved ? LocalizedStringKey("Saved") : LocalizedStringKey("Enter a valid HTTP or HTTPS URL"))
                     .font(.footnote)
-                    .foregroundStyle(hubStatusMessage == "Saved" ? FilTheme.filGreen : FilTheme.error)
+                    .foregroundStyle(hubWasSaved ? FilTheme.filGreenText : FilTheme.error)
             }
         } header: {
             Text("Connection")
@@ -115,13 +132,10 @@ struct SettingsView: View {
                 .onChange(of: liveActivitiesEnabled) { _, enabled in
                     saveLiveActivityPreferences()
                     if !enabled {
-                        Task {
-                            if #available(iOS 16.2, *) {
-                                await FilActivityManager.shared.endAllImmediately()
-                            }
-                        }
+                        removeActivitiesForPrivacyChange()
                     }
                 }
+                .disabled(isApplyingPrivacy)
 
             if liveActivitiesEnabled {
                 Picker("Lock Screen Privacy", selection: $liveActivityPrivacy) {
@@ -130,16 +144,35 @@ struct SettingsView: View {
                     }
                 }
                 .onChange(of: liveActivityPrivacy) { _, _ in
+                    // The shared policy/revision changes synchronously, before any await.
                     saveLiveActivityPreferences()
+                    removeActivitiesForPrivacyChange()
+                }
+                .disabled(isApplyingPrivacy)
+            }
+
+            if isApplyingPrivacy {
+                ProgressView("Removing current Live Activities…")
+            }
+            if !systemAllowsLiveActivities {
+                Label("Live Activities are disabled in iOS Settings", systemImage: "info.circle")
+                    .font(.footnote)
+                if let settingsURL = URL(string: UIApplication.openSettingsURLString) {
+                    Link("Open iOS Settings", destination: settingsURL)
                 }
             }
         } header: {
             Text("Live Activities")
         } footer: {
-            if liveActivityPushEnabled == true {
-                Text("Following is always started manually. Push updates continue when Fil is closed.")
-            } else {
-                Text("Following is always started manually. If Fil is closed, updates pause until the app reconnects.")
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Privacy also applies to widgets. Private hides machine, project and process names. Changing privacy removes current Live Activities; follow a terminal again to apply it.")
+                if liveActivityPushEnabled == true {
+                    Text("This hub supports push updates. Delivery can be delayed; check the last update time. Following is always started manually.")
+                } else if liveActivityPushEnabled == false {
+                    Text("This hub does not provide push updates. Information may become out of date while Fil is closed.")
+                } else {
+                    Text("Push availability could not be confirmed. Information may become out of date while Fil is closed.")
+                }
             }
         }
     }
@@ -192,7 +225,7 @@ struct SettingsView: View {
                 }
             }
 
-            if let privacyURL = URL(string: "https://fil.sh/privacy") {
+            if let privacyURL = URL(string: "https://fil.remenby.fr/privacy") {
                 Link(destination: privacyURL) {
                     Label("Privacy Policy", systemImage: "hand.raised")
                 }
@@ -228,11 +261,11 @@ struct SettingsView: View {
               let scheme = components.scheme?.lowercased(),
               ["https", "http"].contains(scheme),
               components.host != nil else {
-            hubStatusMessage = "Enter a valid HTTP or HTTPS URL"
+            hubWasSaved = false
             return
         }
         TokenStorage.saveHubUrl(trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "/")))
-        hubStatusMessage = "Saved"
+        hubWasSaved = true
     }
 
     private func saveLiveActivityPreferences() {
@@ -240,6 +273,15 @@ struct SettingsView: View {
             isEnabled: liveActivitiesEnabled,
             privacy: liveActivityPrivacy
         ).save()
+    }
+
+    private func removeActivitiesForPrivacyChange() {
+        isApplyingPrivacy = true
+        // Privacy revocation must finish even if the Settings view goes away.
+        Task {
+            await FilActivityManager.shared.endAllImmediately()
+            isApplyingPrivacy = false
+        }
     }
 
     private func deleteAccount() {

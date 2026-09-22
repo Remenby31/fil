@@ -87,6 +87,13 @@ struct AuthView: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
 
+                if let privacyURL = URL(string: "https://fil.remenby.fr/privacy") {
+                    Link("Privacy Policy", destination: privacyURL)
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(FilTheme.filGreenText)
+                        .frame(minHeight: 44)
+                }
+
                 Spacer(minLength: 32)
             }
             .frame(maxWidth: 520)

@@ -10,17 +10,24 @@ services:
     environment:
       - PORT=3100
       - DATABASE_URL=sqlite:/data/fil-hub.db?mode=rwc
-      - JWT_SECRET=${JWT_SECRET:-change-me-in-production}
+      - JWT_SECRET=${JWT_SECRET:?Set JWT_SECRET to a persistent random secret}
       - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID:-}
       - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET:-}
+      - APPLE_CLIENT_ID=${APPLE_CLIENT_ID:-sh.fil.app}
       - PUBLIC_URL=${PUBLIC_URL:-http://localhost:3100}
       - QUIC_PORT=${QUIC_PORT:-16433}
+      - FIL_REQUIRE_ATTACH_TICKET=true
       - DATA_DIR=/data
       - APNS_TEAM_ID=${APNS_TEAM_ID:-}
       - APNS_KEY_ID=${APNS_KEY_ID:-}
       - APNS_TOPIC=${APNS_TOPIC:-sh.fil.app}
       - APNS_PRIVATE_KEY_PATH=${APNS_PRIVATE_KEY_PATH:-}
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   fil-data:

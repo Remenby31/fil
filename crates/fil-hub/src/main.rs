@@ -2,6 +2,7 @@ mod apns;
 mod auth;
 mod client_ws;
 mod config;
+mod data_ws;
 mod db;
 mod quic;
 mod quic_certs;
@@ -46,13 +47,23 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState::new(config).await?;
     let quic_sessions = state.sessions.clone();
     let quic_tickets = state.tickets.clone();
+    let quic_router = state.quic_router.clone();
     let require_ticket = state.config.require_attach_ticket;
+    // Fail startup if the data plane cannot bind. A healthy HTTP endpoint is
+    // misleading when every terminal connection is broken.
+    let quic_addr = SocketAddr::from(([0, 0, 0, 0], quic_port));
+    let certs = quic_certs::QuicCerts::load_or_generate(&data_dir)?;
+    let quic_endpoint = quic::bind_quic_server(quic_addr, certs)?;
     let mut activity_updates = state.sessions.subscribe();
     let activity_db = state.db.pool.clone();
     let activity_apns = state.apns.clone();
     tokio::spawn(async move {
-        while let Ok(update) = activity_updates.recv().await {
-            activity_apns.deliver_update(&activity_db, &update).await;
+        loop {
+            match activity_updates.recv().await {
+                Ok(update) => activity_apns.deliver_update(&activity_db, &update).await,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
         }
     });
 
@@ -79,6 +90,7 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         // Public routes
         .route("/health", get(routes::health_check))
+        .route("/privacy", get(|| async { axum::response::Html(include_str!("../static/privacy.html")) }))
         .route("/auth/github/start", get(auth::github_auth_start))
         .route("/auth/github/callback", get(auth::github_auth_callback))
         .route("/auth/apple/callback", post(auth::apple_auth_callback))
@@ -92,6 +104,7 @@ async fn main() -> anyhow::Result<()> {
             "/sessions/{session_id}/ticket",
             post(routes::create_session_ticket),
         )
+        .route("/sessions/{session_id}/daemon-ticket", post(routes::create_daemon_ticket))
         .route("/live-activities", post(routes::register_live_activity))
         .route(
             "/live-activities/{activity_id}",
@@ -100,8 +113,12 @@ async fn main() -> anyhow::Result<()> {
         // WebSockets for daemon and authenticated iOS clients
         .route("/ws", get(ws::ws_handler))
         .route("/ws/client", get(client_ws::client_ws_handler))
+        .route("/ws/data/{session_id}", get(data_ws::data_ws_handler))
         // Middleware
-        .layer(TraceLayer::new_for_http())
+        .layer(TraceLayer::new_for_http().make_span_with(|request: &axum::http::Request<axum::body::Body>| {
+            // Query strings can contain OAuth codes or WebSocket credentials.
+            tracing::info_span!("request", method = %request.method(), path = request.uri().path())
+        }))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
@@ -109,19 +126,17 @@ async fn main() -> anyhow::Result<()> {
     info!("HTTP listening on {}", addr);
 
     // Start QUIC server for data plane
-    let quic_addr = SocketAddr::from(([0, 0, 0, 0], quic_port));
     tokio::spawn(async move {
-        match quic_certs::QuicCerts::load_or_generate(&data_dir) {
-            Ok(certs) => {
-                info!(fingerprint = %certs.fingerprint(), "QUIC cert fingerprint");
-                if let Err(e) = quic::start_quic_server(quic_addr, certs, quic_sessions, quic_tickets, require_ticket)
-                    .await {
-                    error!(error = %e, "QUIC server failed");
-                }
-            }
-            Err(e) => {
-                error!(error = %e, "failed to generate QUIC certificates");
-            }
+        if let Err(e) = quic::start_quic_server(
+            quic_endpoint,
+            quic_sessions,
+            quic_tickets,
+            require_ticket,
+            quic_router,
+        )
+        .await
+        {
+            error!(error = %e, "QUIC server failed");
         }
     });
 

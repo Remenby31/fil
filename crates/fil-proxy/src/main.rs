@@ -80,7 +80,7 @@ fn run_status() -> Result<ExitCode> {
         println!(
             "  Device:   {} ({})",
             config.device_name,
-            &config.device_id[..8]
+            config.device_id.chars().take(8).collect::<String>()
         );
     } else {
         println!("  Config:   \x1b[31m✗\x1b[0m not configured (run `fil setup`)");

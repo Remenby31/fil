@@ -25,7 +25,7 @@ const MAX_TICKET_BYTES: usize = 128;
 /// A connected client (iOS app) watching a session
 struct AttachedClient {
     id: u64,
-    sender: mpsc::Sender<Vec<u8>>,
+    sender: Option<mpsc::Sender<Vec<u8>>>,
 }
 
 pub(crate) enum DaemonCommand {
@@ -114,6 +114,7 @@ impl ScrollbackBuffer {
         }
     }
 
+    #[cfg(test)]
     fn snapshot(&self) -> Vec<u8> {
         self.buf.clone()
     }
@@ -153,7 +154,7 @@ impl QuicRouter {
         // release the clients lock before taking scrollback, which left a
         // window where a just-attached client received a byte live AND saw it
         // again in its catch-up snapshot.
-        let clients = self.clients.read().await;
+        let mut clients = self.clients.write().await;
         {
             let mut scrollback = self.scrollback.write().await;
             scrollback
@@ -162,11 +163,16 @@ impl QuicRouter {
                 .push(data);
         }
 
-        if let Some(senders) = clients.get(session_id) {
+        if let Some(senders) = clients.get_mut(session_id) {
             for client in senders {
-                // Remote delivery is best-effort. A slow phone must never
-                // stall the daemon stream (and indirectly the local PTY).
-                client.sender.try_send(data.to_vec()).ok();
+                // Close a slow receiver at its last contiguous byte. Letting
+                // later chunks through after a drop corrupts both the terminal
+                // and its resume cursor. The next attach can replay the gap.
+                if let Some(sender) = &client.sender
+                    && sender.try_send(data.to_vec()).is_err()
+                {
+                    client.sender = None;
+                }
             }
         }
     }
@@ -187,7 +193,7 @@ impl QuicRouter {
         let first_client = attached.is_empty();
         attached.push(AttachedClient {
             id: client_id,
-            sender: tx,
+            sender: Some(tx),
         });
 
         let (catchup, stream_offset) = {
@@ -233,7 +239,14 @@ impl QuicRouter {
         tx: mpsc::Sender<DaemonCommand>,
     ) -> u64 {
         let generation = self.next_daemon_generation.fetch_add(1, Ordering::Relaxed);
+        let clients = self.clients.read().await;
         let mut inputs = self.daemon_inputs.write().await;
+        if clients
+            .get(session_id)
+            .is_some_and(|clients| clients.iter().any(|c| c.sender.is_some()))
+        {
+            let _ = tx.try_send(DaemonCommand::ClientAttached);
+        }
         inputs.insert(
             session_id.to_string(),
             RegisteredDaemon {
@@ -247,14 +260,20 @@ impl QuicRouter {
     pub async fn send_to_daemon(&self, session_id: &str, data: &[u8]) {
         let inputs = self.daemon_inputs.read().await;
         if let Some(d) = inputs.get(session_id) {
-            d.sender.send(DaemonCommand::Input(data.to_vec())).await.ok();
+            d.sender
+                .send(DaemonCommand::Input(data.to_vec()))
+                .await
+                .ok();
         }
     }
 
     pub async fn resize_daemon(&self, session_id: &str, cols: u16, rows: u16) {
         let inputs = self.daemon_inputs.read().await;
         if let Some(d) = inputs.get(session_id) {
-            d.sender.send(DaemonCommand::Resize { cols, rows }).await.ok();
+            d.sender
+                .send(DaemonCommand::Resize { cols, rows })
+                .await
+                .ok();
         }
     }
 
@@ -303,13 +322,7 @@ impl QuicRouter {
     }
 }
 
-pub async fn start_quic_server(
-    addr: SocketAddr,
-    certs: QuicCerts,
-    sessions: SessionRegistry,
-    tickets: TicketStore,
-    require_ticket: bool,
-) -> Result<()> {
+pub fn bind_quic_server(addr: SocketAddr, certs: QuicCerts) -> Result<Endpoint> {
     let cert_chain = vec![rustls::pki_types::CertificateDer::from(certs.cert_der)];
     let key = rustls::pki_types::PrivateKeyDer::try_from(certs.key_der)
         .map_err(|e| anyhow::anyhow!("invalid private key: {e}"))?;
@@ -334,9 +347,16 @@ pub async fn start_quic_server(
 
     let endpoint = Endpoint::server(server_config, addr)?;
     info!(addr = %addr, "QUIC server listening");
+    Ok(endpoint)
+}
 
-    let router = Arc::new(QuicRouter::new());
-
+pub async fn start_quic_server(
+    endpoint: Endpoint,
+    sessions: SessionRegistry,
+    tickets: TicketStore,
+    require_ticket: bool,
+    router: Arc<QuicRouter>,
+) -> Result<()> {
     while let Some(incoming) = endpoint.accept().await {
         let router = router.clone();
         let sessions = sessions.clone();
@@ -374,7 +394,9 @@ async fn handle_connection(
                 let sessions = sessions.clone();
                 let tickets = tickets.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = handle_stream(send, recv, router, sessions, tickets, require_ticket).await {
+                    if let Err(e) =
+                        handle_stream(send, recv, router, sessions, tickets, require_ticket).await
+                    {
                         debug!(error = %e, "stream ended");
                     }
                 });
@@ -405,7 +427,10 @@ async fn handle_stream(
 
     match header[0] {
         // 0x01 = Daemon data stream (PTY output)
-        0x01 => {
+        0x01 | 0x11 => {
+            if header[0] == 0x01 && require_ticket {
+                anyhow::bail!("unauthenticated daemon stream rejected");
+            }
             // Read session_id (length-prefixed)
             let mut len_buf = [0u8; 2];
             recv.read_exact(&mut len_buf).await?;
@@ -413,6 +438,22 @@ async fn handle_stream(
             let mut sid_buf = vec![0u8; sid_len];
             recv.read_exact(&mut sid_buf).await?;
             let session_id = String::from_utf8(sid_buf)?;
+
+            if header[0] == 0x11 {
+                recv.read_exact(&mut len_buf).await?;
+                let ticket_len = usize::from(u16::from_be_bytes(len_buf));
+                anyhow::ensure!(ticket_len <= MAX_TICKET_BYTES, "daemon ticket too large");
+                let mut ticket = vec![0; ticket_len];
+                recv.read_exact(&mut ticket).await?;
+                let ticket = String::from_utf8(ticket)?;
+                let user_id = tickets
+                    .redeem(&ticket, &format!("daemon:{session_id}"))
+                    .ok_or_else(|| anyhow::anyhow!("invalid daemon ticket"))?;
+                anyhow::ensure!(
+                    sessions.owns_session(&user_id, &session_id),
+                    "session no longer authorized"
+                );
+            }
 
             debug!(session_id = %session_id, "daemon data stream opened");
 
@@ -463,8 +504,9 @@ async fn handle_stream(
         // deployed ahead of the app keeps working; remove once the fleet has
         // moved to 0x12.
         // 0x12 = v2 client attach, ticket-authenticated.
-        0x02 | 0x12 => {
-            let is_v2 = header[0] == 0x12;
+        0x02 | 0x12 | 0x13 => {
+            let is_v2 = header[0] != 0x02;
+            let is_v3 = header[0] == 0x13;
             let mut resume_from: Option<u64> = None;
 
             // Read session_id
@@ -495,6 +537,10 @@ async fn handle_stream(
 
                 match tickets.redeem(&ticket, &session_id) {
                     Some(user_id) => {
+                        anyhow::ensure!(
+                            sessions.owns_session(&user_id, &session_id),
+                            "session no longer authorized"
+                        );
                         debug!(session_id = %session_id, %user_id, "attach ticket accepted");
                     }
                     None => {
@@ -531,7 +577,14 @@ async fn handle_stream(
                 // v2 clients get the stream offset first so they can resume
                 // next time. v1 keeps the raw byte stream it expects.
                 if is_v2 {
-                    send.write_all(&stream_offset.to_be_bytes()).await?;
+                    // v3 starts at the first replay byte; the client advances
+                    // only after receiving bytes, including subsequent live output.
+                    let cursor = if is_v3 {
+                        stream_offset - catchup.len() as u64
+                    } else {
+                        stream_offset
+                    };
+                    send.write_all(&cursor.to_be_bytes()).await?;
                 }
                 if !catchup.is_empty() {
                     send.write_all(&catchup).await?;
@@ -689,6 +742,31 @@ mod tests {
 #[cfg(test)]
 mod router_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn replacement_daemon_learns_that_clients_are_still_attached() {
+        let router = QuicRouter::new();
+        let _attachment = router.attach_client("audit", None).await;
+        let (tx, mut rx) = mpsc::channel(8);
+        router.register_daemon_input("audit", tx).await;
+        assert!(matches!(rx.try_recv(), Ok(DaemonCommand::ClientAttached)));
+    }
+
+    #[tokio::test]
+    async fn slow_client_closes_at_a_contiguous_cursor_instead_of_silently_losing_bytes() {
+        let router = QuicRouter::new();
+        let (_, _, mut rx, _, _) = router.attach_client("audit", None).await;
+        for _ in 0..514 {
+            router.forward_to_clients("audit", b"x").await;
+        }
+        for _ in 0..512 {
+            assert_eq!(rx.recv().await.unwrap(), b"x");
+        }
+        assert!(matches!(
+            rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Disconnected)
+        ));
+    }
 
     /// Reproduced live before the fix: a daemon reconnects, then its previous
     /// stream's cleanup runs and deletes the channel the new stream just

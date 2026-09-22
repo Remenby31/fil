@@ -3,179 +3,193 @@ import AppIntents
 import SwiftUI
 import WidgetKit
 
-private enum FilLiveColors {
-    static let green = Color(red: 0, green: 0.83, blue: 0.67)
-    static let orange = Color(red: 1, green: 0.66, blue: 0.22)
-    static let gray = Color(white: 0.52)
-    static let background = Color(red: 0.039, green: 0.039, blue: 0.059)
-}
-
-private struct FilMonogram: View {
-    var compact = false
-
-    var body: some View {
-        Text("fil.")
-            .font(.system(size: compact ? 12 : 15, weight: .semibold, design: .rounded))
-            .tracking(-0.7)
-            .accessibilityLabel("Fil")
-    }
-}
-
 private extension FilActivityStatus {
     var label: LocalizedStringResource {
         switch self {
-        case .connected: "Connected"
+        case .connected: "Session available"
         case .reconnecting: "Reconnecting…"
-        case .stale: "Last seen"
+        case .stale: "Update needed"
         case .ended: "Session ended"
+        case .stopped: "Following stopped"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .connected: "checkmark.circle.fill"
+        case .reconnecting: "arrow.triangle.2.circlepath"
+        case .stale: "clock.badge.exclamationmark"
+        case .ended: "checkmark.circle"
+        case .stopped: "pause.circle"
         }
     }
 
     var color: Color {
         switch self {
-        case .connected: FilLiveColors.green
-        case .reconnecting: FilLiveColors.orange
-        case .stale, .ended: FilLiveColors.gray
+        case .connected: .green
+        case .reconnecting: .orange
+        case .stale, .ended, .stopped: .secondary
         }
+    }
+}
+
+/// APNs content is never a privacy policy. All visible and accessible text uses
+/// this projection, capped by both immutable attributes and local preferences.
+private struct FilLiveContent<Content: View>: View {
+    let context: ActivityViewContext<FilActivityAttributes>
+    @ViewBuilder var content: (FilActivityPresentation) -> Content
+
+    @AppStorage(FilSharedStore.activityPrivacyKey, store: FilSharedStore.activityPrivacyDefaults)
+    private var privacyRaw = FilActivityPrivacy.private_.rawValue
+    @AppStorage(FilSharedStore.activityPrivacyRevisionKey, store: FilSharedStore.activityPrivacyDefaults)
+    private var privacyRevision = "unconfigured"
+
+    init(
+        context: ActivityViewContext<FilActivityAttributes>,
+        @ViewBuilder content: @escaping (FilActivityPresentation) -> Content
+    ) {
+        self.context = context
+        self.content = content
+    }
+
+    var body: some View {
+        content(FilActivityProjection.presentation(
+            attributes: context.attributes,
+            state: context.state,
+            isStale: context.isStale,
+            privacy: FilActivityPrivacy(rawValue: privacyRaw) ?? .private_,
+            privacyRevision: privacyRevision
+        ))
     }
 }
 
 struct FilLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: FilActivityAttributes.self) { context in
-            FilLockScreenView(context: context)
-                .widgetURL(FilActivityURL.session(context.attributes.sessionId))
-                .activityBackgroundTint(FilLiveColors.background)
-                .activitySystemActionForegroundColor(.white)
+            FilLiveContent(context: context) { display in
+                FilLockScreenView(display: display)
+            }
+            .widgetURL(FilActivityURL.session(context.attributes.sessionId))
+            .activityBackgroundTint(Color(uiColor: .secondarySystemBackground))
+            .activitySystemActionForegroundColor(.primary)
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    HStack(spacing: 7) {
-                        FilMonogram()
-                            .foregroundStyle(context.state.status.color)
-                        Text(context.attributes.machineName)
-                            .font(.system(size: 13, weight: .semibold))
-                            .lineLimit(1)
-                    }
-                }
-                DynamicIslandExpandedRegion(.trailing) {
-                    Text(timerInterval: context.attributes.startedAt...Date.distantFuture, countsDown: false)
-                        .font(.system(size: 12, design: .monospaced))
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
+                    Text("fil.")
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .accessibilityLabel("Fil")
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    VStack(alignment: .leading, spacing: 9) {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(context.state.projectName)
-                                    .font(.system(size: 14, weight: .medium))
-                                    .lineLimit(1)
-                                HStack(spacing: 5) {
-                                    Circle()
-                                        .fill(context.state.status.color)
-                                        .frame(width: 6, height: 6)
-                                    Text(context.state.status.label)
-                                    if !context.state.shell.isEmpty {
-                                        Text("· \(context.state.shell)")
-                                    }
-                                    if context.state.otherSessionCount > 0 {
-                                        Text("· +\(context.state.otherSessionCount)")
-                                    }
-                                }
-                                .font(.system(size: 11))
-                                .foregroundStyle(.secondary)
-                            }
-                            Spacer(minLength: 8)
-                        }
-                        HStack(spacing: 8) {
-                            Button(intent: OpenFilTerminalIntent(sessionId: context.attributes.sessionId)) {
-                                Label("Open terminal", systemImage: "arrow.up.forward.app")
-                                    .font(.system(size: 12, weight: .semibold))
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .tint(FilLiveColors.green)
-
-                            Button(intent: StopFollowingFilIntent(sessionId: context.attributes.sessionId)) {
-                                Text("Stop following")
-                                    .font(.system(size: 12, weight: .medium))
-                            }
-                            .buttonStyle(.bordered)
-                        }
+                    FilLiveContent(context: context) { display in
+                        FilExpandedActivityView(display: display, sessionId: context.attributes.sessionId)
                     }
-                    .padding(.top, 2)
+                    .environment(\.colorScheme, .dark)
                 }
             } compactLeading: {
-                FilMonogram(compact: true)
-                    .foregroundStyle(context.state.status.color)
+                Text("fil.")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .accessibilityLabel("Fil")
             } compactTrailing: {
-                Text(timerInterval: context.attributes.startedAt...Date.distantFuture, countsDown: false)
-                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                    .monospacedDigit()
-                    .foregroundStyle(context.state.status.color)
+                FilLiveContent(context: context) { display in
+                    Image(systemName: display.status.symbol)
+                        .foregroundStyle(display.status.color)
+                        .accessibilityLabel(Text(display.status.label))
+                }
+                .environment(\.colorScheme, .dark)
             } minimal: {
-                FilMonogram(compact: true)
-                    .foregroundStyle(context.state.status.color)
+                FilLiveContent(context: context) { display in
+                    Image(systemName: display.status.symbol)
+                        .foregroundStyle(display.status.color)
+                        .accessibilityLabel(Text("Fil") + Text(", ") + Text(display.status.label))
+                }
+                .environment(\.colorScheme, .dark)
             }
             .widgetURL(FilActivityURL.session(context.attributes.sessionId))
-            .keylineTint(context.state.status.color)
+            .keylineTint(.secondary)
         }
     }
 }
 
-private struct FilLockScreenView: View {
-    let context: ActivityViewContext<FilActivityAttributes>
-    @Environment(\.isLuminanceReduced) private var isLuminanceReduced
+private struct FilActivityStatusLine: View {
+    let display: FilActivityPresentation
 
     var body: some View {
-        HStack(spacing: 12) {
-            FilMonogram()
-                .foregroundStyle(context.state.status.color)
-                .frame(width: 34, height: 34)
-                .background(context.state.status.color.opacity(isLuminanceReduced ? 0.08 : 0.14))
-                .clipShape(RoundedRectangle(cornerRadius: 9))
-
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(context.attributes.machineName)
-                        .font(.system(size: 14, weight: .semibold))
-                        .lineLimit(1)
-                    Circle()
-                        .fill(context.state.status.color)
-                        .frame(width: 6, height: 6)
-                }
-                Text(context.state.projectName)
-                    .font(.system(size: 13))
-                    .lineLimit(1)
-                HStack(spacing: 4) {
-                    Text(context.state.status.label)
-                    if !context.state.shell.isEmpty { Text("· \(context.state.shell)") }
-                    if context.state.otherSessionCount > 0 {
-                        Text(
-                            "· \(context.state.otherSessionCount) "
-                                + String(
-                                    localized: context.state.otherSessionCount == 1
-                                        ? "other"
-                                        : "others"
-                                )
-                        )
-                    }
-                }
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-            }
-
-            Spacer(minLength: 8)
-
-            Text(timerInterval: context.attributes.startedAt...Date.distantFuture, countsDown: false)
-                .font(.system(size: 13, weight: .medium, design: .monospaced))
-                .monospacedDigit()
-                .foregroundStyle(context.state.status.color)
+        Label {
+            Text(display.status.label)
+        } icon: {
+            Image(systemName: display.status.symbol)
+                .foregroundStyle(display.status.color)
         }
-        .padding(16)
+        .font(.subheadline.weight(.medium))
+        .foregroundStyle(.primary)
+        .lineLimit(1)
+    }
+}
+
+private struct FilActivityFreshness: View {
+    let display: FilActivityPresentation
+
+    var body: some View {
+        if display.status != .ended && display.status != .stopped {
+            (Text("Last update") + Text(" · ") + Text(display.lastUpdatedAt, style: .relative))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+    }
+}
+
+private struct FilExpandedActivityView: View {
+    let display: FilActivityPresentation
+    let sessionId: String
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if !dynamicTypeSize.isAccessibilitySize {
+                Text(display.projectName)
+                    .font(.headline)
+                    .lineLimit(1)
+            }
+            FilActivityStatusLine(display: display)
+            FilActivityFreshness(display: display)
+            Button(intent: StopFollowingFilIntent(sessionId: sessionId)) {
+                Label("Stop following", systemImage: "pause.circle")
+                    .font(.caption.weight(.semibold))
+                    .frame(minHeight: 44)
+            }
+            .buttonStyle(.bordered)
+            .tint(.white)
+            .accessibilityHint("Removes the Live Activity without closing the terminal")
+        }
+        .foregroundStyle(.white)
+    }
+}
+
+private struct FilLockScreenView: View {
+    let display: FilActivityPresentation
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(display.projectName)
+                .font(.headline)
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+
+            if !dynamicTypeSize.isAccessibilitySize, !display.machineName.isEmpty {
+                Text(display.shell.isEmpty ? display.machineName : "\(display.machineName) · \(display.shell)")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            FilActivityStatusLine(display: display)
+            FilActivityFreshness(display: display)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(
-            "Fil terminal on \(context.attributes.machineName), \(context.state.projectName), \(context.state.status.label)"
-        )
     }
 }

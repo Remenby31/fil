@@ -1,321 +1,612 @@
 import Foundation
 import Network
+import Security
 
+/// The narrow Network.framework boundary used by deterministic transport tests.
+protocol TerminalQUICConnection: AnyObject, Sendable {
+    var stateUpdateHandler: (@Sendable (NWConnection.State) -> Void)? { get set }
+    var viabilityUpdateHandler: (@Sendable (Bool) -> Void)? { get set }
+    var betterPathUpdateHandler: (@Sendable (Bool) -> Void)? { get set }
+    func start(queue: DispatchQueue)
+    func cancel()
+    func send(_ data: Data, isComplete: Bool, completion: @escaping @Sendable (NWError?) -> Void)
+    func receive(completion: @escaping @Sendable (Data?, Bool, NWError?) -> Void)
+}
+
+private final class NetworkTerminalConnection: TerminalQUICConnection, @unchecked Sendable {
+    private let connection: NWConnection
+    init(endpoint: NWEndpoint, parameters: NWParameters) {
+        connection = NWConnection(to: endpoint, using: parameters)
+    }
+    var stateUpdateHandler: (@Sendable (NWConnection.State) -> Void)? {
+        get { connection.stateUpdateHandler }
+        set { connection.stateUpdateHandler = newValue }
+    }
+    var viabilityUpdateHandler: (@Sendable (Bool) -> Void)? {
+        get { connection.viabilityUpdateHandler }
+        set { connection.viabilityUpdateHandler = newValue }
+    }
+    var betterPathUpdateHandler: (@Sendable (Bool) -> Void)? {
+        get { connection.betterPathUpdateHandler }
+        set { connection.betterPathUpdateHandler = newValue }
+    }
+    func start(queue: DispatchQueue) { connection.start(queue: queue) }
+    func cancel() { connection.cancel() }
+    func send(_ data: Data, isComplete: Bool, completion: @escaping @Sendable (NWError?) -> Void) {
+        connection.send(content: data, contentContext: .defaultMessage,
+                        isComplete: isComplete, completion: .contentProcessed(completion))
+    }
+    func receive(completion: @escaping @Sendable (Data?, Bool, NWError?) -> Void) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 16384) { data, _, done, error in
+            completion(data, done, error)
+        }
+    }
+}
+
+/// One instance per attach. All connection/decoder/input state is confined to
+/// queue. Callback properties alone use callbackLock, including test injection.
+/// Public operations enqueue, never synchronously wait on the network queue:
+/// session callbacks can safely call back into this transport.
 final class QUICTerminalClient: @unchecked Sendable {
-    private var connection: NWConnection?
-    private let hubHost: String
-    private let hubPort: UInt16
-    private let stateLock = NSLock()
-    private var isReady = false
-    private var pendingResize: (cols: UInt16, rows: UInt16)?
-    private var lastSentResize: (cols: UInt16, rows: UInt16)?
+    private let queue = DispatchQueue(label: "sh.fil.quic")
+    private let callbackLock = NSLock()
+    private var outputCallback: (@Sendable (Data, UInt64) -> Void)?
+    private var connectedCallback: (@Sendable () -> Void)?
+    private var disconnectedCallback: (@Sendable () -> Void)?
+    private var betterPathCallback: (@Sendable () -> Void)?
+    private var waitingCallback: (@Sendable (NWError) -> Void)?
 
-    var onDataReceived: (@Sendable (Data) -> Void)?
-    var onConnected: (@Sendable () -> Void)?
-    var onDisconnected: (@Sendable () -> Void)?
-    /// NWConnection sits in `.waiting` indefinitely when the endpoint is
-    /// unreachable — it never reaches `.failed` on its own. Measured: 94.5s
-    /// against a black hole produced only `.preparing` and `.waiting`. The
-    /// session uses this to arm a watchdog, which is the only way out.
-    var onWaiting: (@Sendable (NWError) -> Void)?
-
-    /// Guarantees `onDisconnected` fires at most once per connection. It could
-    /// previously be delivered up to three times (`.failed`, `.cancelled`, and
-    /// the receive loop), so a single drop produced a burst of state changes.
-    private var didReportDisconnect = false
-    /// Input typed before the stream is ready used to be dropped on the floor.
-    private var pendingInput: [Data] = []
-    private static let maxPendingInputBytes = 64 * 1024
-    /// Single-use credential for this attach, minted over HTTPS just before
-    /// connecting. Nil falls back to the unauthenticated v1 header so the app
-    /// still works against a hub that predates ticket support.
-    private var attachTicket: String?
-    /// Stream offset already rendered, so a reattach replays only the delta
-    /// instead of the whole 64 KB buffer. Zero means cold attach.
-    private var resumeOffset: UInt64 = 0
-    /// On a v2 stream the hub sends the current stream offset before any
-    /// terminal bytes; this consumes exactly those 8 bytes.
-    private var awaitingOffsetPrefix = false
-    private var offsetPrefixBuffer = Data()
-
-    /// Reported after each attach so the session can persist the cursor.
-    var onStreamOffset: (@Sendable (UInt64) -> Void)?
-
-    init(hubHost: String, hubPort: UInt16 = 16433) {
-        self.hubHost = hubHost
-        self.hubPort = hubPort
+    var onOutputReceived: (@Sendable (Data, UInt64) -> Void)? {
+        get { callbackLock.filWithLock { outputCallback } }
+        set { callbackLock.filWithLock { outputCallback = newValue } }
+    }
+    var onConnected: (@Sendable () -> Void)? {
+        get { callbackLock.filWithLock { connectedCallback } }
+        set { callbackLock.filWithLock { connectedCallback = newValue } }
+    }
+    var onDisconnected: (@Sendable () -> Void)? {
+        get { callbackLock.filWithLock { disconnectedCallback } }
+        set { callbackLock.filWithLock { disconnectedCallback = newValue } }
+    }
+    var onBetterPathAvailable: (@Sendable () -> Void)? {
+        get { callbackLock.filWithLock { betterPathCallback } }
+        set { callbackLock.filWithLock { betterPathCallback = newValue } }
+    }
+    var onWaiting: (@Sendable (NWError) -> Void)? {
+        get { callbackLock.filWithLock { waitingCallback } }
+        set { callbackLock.filWithLock { waitingCallback = newValue } }
     }
 
-    func connect(sessionId: String) {
-        connect(sessionId: sessionId, ticket: nil)
+    private let hubHost: String
+    private let hubPort: UInt16
+    private let makeConnection: @Sendable (NWEndpoint, NWParameters) -> TerminalQUICConnection
+    private let detachTimeout: TimeInterval
+    private var connection: TerminalQUICConnection?
+    private var hasStarted = false
+    private var isClosed = false
+    private var isReady = false
+    private var headerSent = false
+    private var decoder = TerminalStreamDecoder()
+    private var serverCertificate = Data()
+    private var pendingResize: (cols: UInt16, rows: UInt16)?
+    private var lastSentResize: (cols: UInt16, rows: UInt16)?
+    private var pendingInput: [Data] = []
+    private var pendingInputBytes = 0
+    private static let maxPendingInputBytes = 64 * 1024
+
+    init(
+        hubHost: String,
+        hubPort: UInt16 = 16433,
+        detachTimeout: TimeInterval = 1,
+        makeConnection: @escaping @Sendable (NWEndpoint, NWParameters) -> TerminalQUICConnection = {
+            NetworkTerminalConnection(endpoint: $0, parameters: $1)
+        }
+    ) {
+        self.hubHost = hubHost
+        self.hubPort = hubPort
+        self.detachTimeout = detachTimeout
+        self.makeConnection = makeConnection
+    }
+
+    deinit { connection?.cancel() }
+
+    func setServerCertificate(_ certificate: Data) {
+        queue.async { [self] in
+            guard !hasStarted, !isClosed else { return }
+            serverCertificate = certificate
+        }
     }
 
     func connect(sessionId: String, ticket: String?, resumeFrom: UInt64 = 0) {
-        stateLock.filWithLock {
-            attachTicket = ticket
-            resumeOffset = resumeFrom
-            awaitingOffsetPrefix = ticket != nil
-            offsetPrefixBuffer.removeAll()
-        }
-        let params = NWParameters(quic: makeQUICOptions())
-
-        let endpoint = NWEndpoint.hostPort(
-            host: NWEndpoint.Host(hubHost),
-            port: NWEndpoint.Port(rawValue: hubPort)!
-        )
-
-        let conn = NWConnection(to: endpoint, using: params)
-
-        conn.stateUpdateHandler = { [weak self] state in
-            self?.handleConnectionState(state, sessionId: sessionId)
-        }
-        // A connection can stay nominally `.ready` while carrying no traffic
-        // after a network change; viability is how Network.framework says so.
-        conn.viabilityUpdateHandler = { [weak self] isViable in
-            guard !isViable else { return }
-            self?.reportDisconnected()
-        }
-        // Wi-Fi <-> cellular handoff. Network.framework QUIC does not migrate
-        // the connection for us, so the session has to build a new one.
-        conn.betterPathUpdateHandler = { [weak self] betterPathAvailable in
-            guard betterPathAvailable else { return }
-            self?.onBetterPathAvailable?()
-        }
-
-        stateLock.filWithLock {
+        queue.async { [self] in
+            guard !hasStarted, !isClosed else { return }
+            hasStarted = true
+            guard let ticket, !ticket.isEmpty,
+                  !serverCertificate.isEmpty, !hubHost.isEmpty,
+                  let port = NWEndpoint.Port(rawValue: hubPort),
+                  let header = Self.attachHeader(sessionId: sessionId, ticket: ticket, resumeFrom: resumeFrom) else {
+                fail()
+                return
+            }
+            let conn = makeConnection(
+                .hostPort(host: NWEndpoint.Host(hubHost), port: port),
+                NWParameters(quic: makeQUICOptions())
+            )
             connection = conn
-            isReady = false
-            lastSentResize = nil
-            didReportDisconnect = false
-            pendingInput.removeAll()
+            conn.stateUpdateHandler = { [weak self, weak conn] state in
+                guard let self, let conn else { return }
+                self.queue.async { [weak self] in
+                    guard let self, self.connection === conn, !self.isClosed else { return }
+                    switch state {
+                    case .ready:
+                        guard !self.headerSent else { return }
+                        self.headerSent = true
+                        self.send(header, on: conn)
+                        self.receive(on: conn)
+                    case .waiting(let error): self.onWaiting?(error)
+                    case .failed, .cancelled: self.fail()
+                    default: break
+                    }
+                }
+            }
+            conn.viabilityUpdateHandler = { [weak self, weak conn] viable in
+                guard !viable, let self, let conn else { return }
+                self.queue.async { [weak self] in
+                    guard let self, self.connection === conn else { return }
+                    self.fail()
+                }
+            }
+            conn.betterPathUpdateHandler = { [weak self, weak conn] better in
+                guard better, let self, let conn else { return }
+                self.queue.async { [weak self] in
+                    guard let self, self.connection === conn, !self.isClosed else { return }
+                    self.onBetterPathAvailable?()
+                }
+            }
+            conn.start(queue: queue)
         }
-        conn.start(queue: .global(qos: .userInteractive))
     }
 
-    /// Signalled when the OS reports a better route; the session responds by
-    /// standing up a replacement connection.
-    var onBetterPathAvailable: (@Sendable () -> Void)?
+    func disconnect() { disconnect(completion: {}) }
 
-    func disconnect() {
-        let (conn, wasReady) = stateLock.filWithLock {
+    func disconnect(completion: @escaping @Sendable () -> Void) {
+        queue.async { [self] in
             let conn = connection
-            let wasReady = isReady
             connection = nil
+            let shouldDetach = isReady
+            isClosed = true
             isReady = false
             pendingResize = nil
-            lastSentResize = nil
             pendingInput.removeAll()
-            // A deliberate teardown must not look like a drop to the session.
-            didReportDisconnect = true
-            return (conn, wasReady)
+            pendingInputBytes = 0
+            guard let conn else { completion(); return }
+            clearHandlers(conn)
+            guard shouldDetach else { conn.cancel(); completion(); return }
+            // A black-holed send may never complete. Bound both socket lifetime
+            // and the application's background task, with exactly-once cleanup.
+            let done = TerminalCompletionOnce {
+                conn.cancel()
+                completion()
+            }
+            queue.asyncAfter(deadline: .now() + detachTimeout) { done.run() }
+            conn.send(Data([TerminalControlFrame.detach]), isComplete: true) { _ in done.run() }
         }
-        guard let conn else { return }
-
-        // Otherwise the handlers keep firing on a connection we have discarded.
-        conn.stateUpdateHandler = nil
-        conn.viabilityUpdateHandler = nil
-        conn.betterPathUpdateHandler = nil
-
-        guard wasReady else {
-            conn.cancel()
-            return
-        }
-
-        // Explicitly release the remote attachment before closing QUIC. This
-        // restores the Mac PTY size immediately during normal navigation.
-        conn.send(
-            content: Data([TerminalControlFrame.detach]),
-            contentContext: .defaultMessage,
-            isComplete: true,
-            completion: .contentProcessed { _ in conn.cancel() }
-        )
     }
 
     func sendInput(_ data: Data) {
-        guard !data.isEmpty else { return }
-        let frame = makeInputFrame(data)
-        let ready = stateLock.filWithLock { () -> Bool in
-            if isReady { return true }
-            // Buffer instead of dropping: keystrokes typed during the
-            // sub-second window before the stream is ready used to vanish.
-            let buffered = pendingInput.reduce(0) { $0 + $1.count }
-            if buffered + frame.count <= Self.maxPendingInputBytes {
+        guard !data.isEmpty, data.count <= Int(UInt32.max) else { return }
+        queue.async { [self] in
+            guard !isClosed else { return }
+            var frame = Data([TerminalControlFrame.input])
+            var count = UInt32(data.count).bigEndian
+            frame.append(Data(bytes: &count, count: 4))
+            frame.append(data)
+            if isReady, let connection {
+                send(frame, on: connection)
+            } else if pendingInputBytes + frame.count <= Self.maxPendingInputBytes {
                 pendingInput.append(frame)
+                pendingInputBytes += frame.count
             }
-            return false
         }
-        guard ready else { return }
-        sendFrame(frame)
     }
 
     func sendResize(cols: UInt16, rows: UInt16) {
         guard cols > 0, rows > 0 else { return }
-        let shouldSend = stateLock.filWithLock {
+        queue.async { [self] in
+            guard !isClosed else { return }
             pendingResize = (cols, rows)
-            guard isReady,
-                  lastSentResize?.cols != cols || lastSentResize?.rows != rows else {
-                return false
-            }
-            lastSentResize = (cols, rows)
-            return true
+            flushResize()
         }
-        guard shouldSend else { return }
-        sendFrame(makeResizeFrame(cols: cols, rows: rows))
     }
 
-    private func handleConnectionState(_ state: NWConnection.State, sessionId: String) {
-        switch state {
-        case .ready:
-            sendStreamHeader(sessionId: sessionId)
-            let (pendingResize, queuedInput) = stateLock.filWithLock {
-                isReady = true
-                let resize = self.pendingResize
-                if let resize {
-                    lastSentResize = resize
+    private func flushResize() {
+        guard isReady, let connection, let size = pendingResize,
+              lastSentResize?.cols != size.cols || lastSentResize?.rows != size.rows else { return }
+        lastSentResize = size
+        var frame = Data([TerminalControlFrame.resize])
+        var cols = size.cols.bigEndian
+        var rows = size.rows.bigEndian
+        frame.append(Data(bytes: &cols, count: 2))
+        frame.append(Data(bytes: &rows, count: 2))
+        send(frame, on: connection)
+    }
+
+    private func receive(on conn: TerminalQUICConnection) {
+        conn.receive { [weak self, weak conn] data, complete, error in
+            guard let self, let conn else { return }
+            self.queue.async { [weak self] in
+                guard let self, self.connection === conn, !self.isClosed else { return }
+                if let data, !data.isEmpty {
+                    do {
+                        let wasReady = self.decoder.isReady
+                        let payload = try self.decoder.receive(data)
+                        if let offset = self.decoder.offset {
+                            // Commit bytes and cursor before announcing readiness.
+                            self.onOutputReceived?(payload, offset)
+                        }
+                        if !wasReady && self.decoder.isReady {
+                            self.isReady = true
+                            self.onConnected?()
+                            self.flushResize()
+                            let input = self.pendingInput
+                            self.pendingInput.removeAll()
+                            self.pendingInputBytes = 0
+                            for frame in input { self.send(frame, on: conn) }
+                        }
+                    } catch {
+                        self.fail()
+                        return
+                    }
                 }
-                let queued = pendingInput
-                pendingInput.removeAll()
-                return (resize, queued)
+                if complete || error != nil {
+                    self.fail()
+                } else {
+                    self.receive(on: conn)
+                }
             }
-            if let pendingResize {
-                sendFrame(makeResizeFrame(cols: pendingResize.cols, rows: pendingResize.rows))
-            }
-            for frame in queuedInput {
-                sendFrame(frame)
-            }
-            onConnected?()
-            startReceiving()
-        case .waiting(let error):
-            // Not a failure as far as Network.framework is concerned: it will
-            // keep waiting forever. Hand it to the session, which times out.
-            onWaiting?(error)
-        case .failed, .cancelled:
-            reportDisconnected()
-        case .preparing, .setup:
-            break
-        @unknown default:
-            break
         }
     }
 
-    /// Collapses the several teardown paths into exactly one notification.
-    private func reportDisconnected() {
-        let shouldReport = stateLock.filWithLock {
-            isReady = false
-            guard !didReportDisconnect else { return false }
-            didReportDisconnect = true
-            return true
+    private func send(_ data: Data, on conn: TerminalQUICConnection) {
+        conn.send(data, isComplete: false) { [weak self, weak conn] error in
+            guard error != nil, let self, let conn else { return }
+            self.queue.async { [weak self] in
+                guard let self, self.connection === conn else { return }
+                self.fail()
+            }
         }
-        guard shouldReport else { return }
+    }
+
+    private func fail() {
+        guard !isClosed else { return }
+        isClosed = true
+        isReady = false
+        let conn = connection
+        connection = nil
+        pendingInput.removeAll()
+        pendingInputBytes = 0
+        if let conn { clearHandlers(conn); conn.cancel() }
         onDisconnected?()
     }
 
-    /// v2 attach header: [0x12][u16 sid_len][sid][u16 ticket_len][ticket].
-    ///
-    /// A distinct stream type rather than an extended 0x02, so an older hub
-    /// fails cleanly on an unknown type instead of misparsing the ticket as
-    /// part of the session id.
-    private func sendStreamHeader(sessionId: String) {
-        let ticket = stateLock.filWithLock { attachTicket }
-
-        var header = Data([ticket == nil ? 0x02 : 0x12])
-        let sidData = Data(sessionId.utf8)
-        var lenBytes = UInt16(sidData.count).bigEndian
-        header.append(Data(bytes: &lenBytes, count: 2))
-        header.append(sidData)
-
-        if let ticket {
-            let ticketData = Data(ticket.utf8)
-            var ticketLen = UInt16(ticketData.count).bigEndian
-            header.append(Data(bytes: &ticketLen, count: 2))
-            header.append(ticketData)
-
-            var offset = stateLock.filWithLock { resumeOffset }.bigEndian
-            header.append(Data(bytes: &offset, count: 8))
-        }
-
-        let conn = stateLock.filWithLock { connection }
-        conn?.send(content: header, completion: .contentProcessed { _ in })
+    private func clearHandlers(_ conn: TerminalQUICConnection) {
+        conn.stateUpdateHandler = nil
+        conn.viabilityUpdateHandler = nil
+        conn.betterPathUpdateHandler = nil
     }
 
-    private func startReceiving() {
-        receiveLoop()
-    }
-
-    private func receiveLoop() {
-        let conn = stateLock.filWithLock { connection }
-        conn?.receive(minimumIncompleteLength: 1, maximumLength: 16384) { [weak self] data, _, isComplete, error in
-            if let data, !data.isEmpty {
-                self?.deliver(data)
-            }
-            if isComplete || error != nil {
-                self?.reportDisconnected()
-                return
-            }
-            self?.receiveLoop()
-        }
-    }
-
-    /// Strips the v2 offset prefix before handing bytes to the terminal.
-    private func deliver(_ data: Data) {
-        var payload = data
-        let prefix: Data? = stateLock.filWithLock {
-            guard awaitingOffsetPrefix else { return nil }
-            offsetPrefixBuffer.append(payload)
-            guard offsetPrefixBuffer.count >= 8 else {
-                payload = Data()
-                return nil
-            }
-            let head = offsetPrefixBuffer.prefix(8)
-            payload = Data(offsetPrefixBuffer.dropFirst(8))
-            awaitingOffsetPrefix = false
-            offsetPrefixBuffer.removeAll()
-            return Data(head)
-        }
-
-        if let prefix {
-            let offset = prefix.reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
-            stateLock.filWithLock { resumeOffset = offset }
-            onStreamOffset?(offset)
-        }
-
-        guard !payload.isEmpty else { return }
-        onDataReceived?(payload)
+    /// v3: [0x13][u16 sid length][sid][u16 ticket length][ticket][u64 cursor].
+    static func attachHeader(sessionId: String, ticket: String, resumeFrom: UInt64) -> Data? {
+        let sid = Data(sessionId.utf8)
+        let token = Data(ticket.utf8)
+        guard !sid.isEmpty, !token.isEmpty,
+              let sidLength = UInt16(exactly: sid.count),
+              let ticketLength = UInt16(exactly: token.count) else { return nil }
+        var header = Data([0x13])
+        var sidBE = sidLength.bigEndian
+        var ticketBE = ticketLength.bigEndian
+        var cursorBE = resumeFrom.bigEndian
+        header.append(Data(bytes: &sidBE, count: 2))
+        header.append(sid)
+        header.append(Data(bytes: &ticketBE, count: 2))
+        header.append(token)
+        header.append(Data(bytes: &cursorBE, count: 8))
+        return header
     }
 
     private func makeQUICOptions() -> NWProtocolQUIC.Options {
         let options = NWProtocolQUIC.Options(alpn: ["fil"])
-        // The hub also advertises this timeout. If iOS is killed or suspended
-        // before sending the explicit detach frame, the Mac is released in
-        // seconds instead of retaining the phone's PTY size for five minutes.
         options.idleTimeout = 15_000
-        let secOptions = options.securityProtocolOptions
-        sec_protocol_options_set_verify_block(secOptions, { _, _, completion in
-            completion(true)
-        }, .global(qos: .userInteractive))
+        let expected = serverCertificate
+        sec_protocol_options_set_verify_block(options.securityProtocolOptions, { _, trust, completion in
+            let trust = sec_trust_copy_ref(trust).takeRetainedValue()
+            guard !expected.isEmpty,
+                  let chain = SecTrustCopyCertificateChain(trust) as? [SecCertificate],
+                  let leaf = chain.first else { completion(false); return }
+            completion((SecCertificateCopyData(leaf) as Data) == expected)
+        }, queue)
         return options
     }
+}
 
-    private func sendFrame(_ frame: Data) {
-        let conn = stateLock.filWithLock { isReady ? connection : nil }
-        conn?.send(content: frame, completion: .contentProcessed { _ in })
+/// Send completion and timeout may race, on different queues.
+private final class TerminalCompletionOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var action: (@Sendable () -> Void)?
+    init(_ action: @escaping @Sendable () -> Void) { self.action = action }
+    func run() {
+        let action = lock.filWithLock {
+            let action = self.action
+            self.action = nil
+            return action
+        }
+        action?()
+    }
+}
+
+
+/// HTTPS/WSS uses URLSession's system certificate validation. No permissive
+/// trust delegate and no bearer token in the URL or binary terminal frames.
+protocol TerminalWebSocketTask: AnyObject, Sendable {
+    func resume()
+    func cancel(with closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?)
+    func send(_ message: URLSessionWebSocketTask.Message,
+              completionHandler: @escaping @Sendable (Error?) -> Void)
+    func receive(completionHandler: @escaping @Sendable (Result<URLSessionWebSocketTask.Message, Error>) -> Void)
+    func sendPing(pongReceiveHandler: @escaping @Sendable (Error?) -> Void)
+}
+
+extension URLSessionWebSocketTask: TerminalWebSocketTask {}
+
+/// Authenticated fallback for networks which block UDP. Queue-confined just
+/// like QUIC; only callback registration needs a separate lock.
+final class WebSocketTerminalClient: TerminalTransport, @unchecked Sendable {
+    private struct Callbacks {
+        var output: (@Sendable (Data, UInt64) -> Void)?
+        var connected: (@Sendable () -> Void)?
+        var disconnected: (@Sendable () -> Void)?
+        var path: (@Sendable () -> Void)?
+    }
+    private let callbackLock = NSLock()
+    private var callbacks = Callbacks()
+    var onOutputReceived: (@Sendable (Data, UInt64) -> Void)? {
+        get { callbackLock.filWithLock { callbacks.output } }
+        set { callbackLock.filWithLock { callbacks.output = newValue } }
+    }
+    var onConnected: (@Sendable () -> Void)? {
+        get { callbackLock.filWithLock { callbacks.connected } }
+        set { callbackLock.filWithLock { callbacks.connected = newValue } }
+    }
+    var onDisconnected: (@Sendable () -> Void)? {
+        get { callbackLock.filWithLock { callbacks.disconnected } }
+        set { callbackLock.filWithLock { callbacks.disconnected = newValue } }
+    }
+    var onBetterPathAvailable: (@Sendable () -> Void)? {
+        get { callbackLock.filWithLock { callbacks.path } }
+        set { callbackLock.filWithLock { callbacks.path = newValue } }
     }
 
-    private func makeInputFrame(_ data: Data) -> Data {
-        var frame = Data([TerminalControlFrame.input])
-        var length = UInt32(data.count).bigEndian
-        frame.append(Data(bytes: &length, count: MemoryLayout<UInt32>.size))
-        frame.append(data)
-        return frame
+    private let queue = DispatchQueue(label: "sh.fil.terminal-websocket")
+    private let hubURL: String
+    private let token: String?
+    private let makeSocket: @Sendable (URLRequest) -> TerminalWebSocketTask
+    private let detachTimeout: TimeInterval
+    private var socket: TerminalWebSocketTask?
+    private var hasStarted = false
+    private var isClosed = false
+    private var isReady = false
+    private var decoder = TerminalStreamDecoder()
+    private var pinger: DispatchSourceTimer?
+    private var pendingInput: [Data] = []
+    private var pendingInputBytes = 0
+    private var pendingResize: (UInt16, UInt16)?
+    private var lastSentResize: (UInt16, UInt16)?
+
+    init(
+        hubURL: String,
+        token: String?,
+        detachTimeout: TimeInterval = 1,
+        makeSocket: @escaping @Sendable (URLRequest) -> TerminalWebSocketTask = {
+            URLSession.shared.webSocketTask(with: $0)
+        }
+    ) {
+        self.hubURL = hubURL
+        self.token = token
+        self.detachTimeout = detachTimeout
+        self.makeSocket = makeSocket
     }
 
-    private func makeResizeFrame(cols: UInt16, rows: UInt16) -> Data {
+    deinit {
+        pinger?.cancel()
+        socket?.cancel(with: .goingAway, reason: nil)
+    }
+
+    // WSS authenticates the server using system HTTPS trust, not the QUIC pin.
+    func setServerCertificate(_ certificate: Data) {}
+
+    static func request(hubURL: String, token: String?, sessionId: String, resumeFrom: UInt64) -> URLRequest? {
+        guard let token, !token.isEmpty, !sessionId.isEmpty,
+              var url = URLComponents(string: hubURL),
+              url.scheme?.lowercased() == "https", url.host != nil,
+              url.user == nil, url.password == nil else { return nil }
+        url.scheme = "wss"
+        url.path = "/ws/data/\(sessionId)"
+        url.queryItems = [
+            URLQueryItem(name: "role", value: "client"),
+            URLQueryItem(name: "resume_from", value: String(resumeFrom))
+        ]
+        url.fragment = nil
+        guard let endpoint = url.url else { return nil }
+        var request = URLRequest(url: endpoint)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        return request
+    }
+
+    func connect(sessionId: String, ticket: String?, resumeFrom: UInt64) {
+        queue.async { [self] in
+            guard !hasStarted, !isClosed else { return }
+            hasStarted = true
+            guard let request = Self.request(hubURL: hubURL, token: token, sessionId: sessionId, resumeFrom: resumeFrom) else {
+                fail()
+                return
+            }
+            let socket = makeSocket(request)
+            self.socket = socket
+            socket.resume()
+            receive(on: socket)
+            let timer = DispatchSource.makeTimerSource(queue: queue)
+            timer.schedule(deadline: .now() + 30, repeating: 30)
+            timer.setEventHandler { [weak self, weak socket] in
+                guard let self, let socket, self.socket === socket else { return }
+                socket.sendPing { [weak self, weak socket] error in
+                    guard error != nil, let self, let socket else { return }
+                    self.queue.async { [weak self] in
+                        guard let self, self.socket === socket else { return }
+                        self.fail()
+                    }
+                }
+            }
+            pinger = timer
+            timer.resume()
+        }
+    }
+
+    func disconnect() { disconnect(completion: {}) }
+
+    func disconnect(completion: @escaping @Sendable () -> Void) {
+        queue.async { [self] in
+            let socket = self.socket
+            self.socket = nil
+            let shouldDetach = isReady
+            isClosed = true
+            isReady = false
+            pinger?.cancel()
+            pinger = nil
+            pendingInput.removeAll()
+            pendingInputBytes = 0
+            guard let socket else { completion(); return }
+            guard shouldDetach else {
+                socket.cancel(with: .goingAway, reason: nil)
+                completion()
+                return
+            }
+            let done = TerminalCompletionOnce {
+                socket.cancel(with: .normalClosure, reason: nil)
+                completion()
+            }
+            queue.asyncAfter(deadline: .now() + detachTimeout) { done.run() }
+            socket.send(.data(Data([TerminalControlFrame.detach]))) { _ in done.run() }
+        }
+    }
+
+    func sendInput(_ data: Data) {
+        guard !data.isEmpty, data.count <= Int(UInt32.max) else { return }
+        queue.async { [self] in
+            guard !isClosed else { return }
+            var frame = Data([TerminalControlFrame.input])
+            var count = UInt32(data.count).bigEndian
+            frame.append(Data(bytes: &count, count: 4))
+            frame.append(data)
+            if isReady, let socket {
+                send(frame, on: socket)
+            } else if pendingInputBytes + frame.count <= 64 * 1024 {
+                pendingInput.append(frame)
+                pendingInputBytes += frame.count
+            }
+        }
+    }
+
+    func sendResize(cols: UInt16, rows: UInt16) {
+        guard cols > 0, rows > 0 else { return }
+        queue.async { [self] in
+            guard !isClosed else { return }
+            pendingResize = (cols, rows)
+            flushResize()
+        }
+    }
+
+    private func flushResize() {
+        guard isReady, let socket, let size = pendingResize,
+              lastSentResize?.0 != size.0 || lastSentResize?.1 != size.1 else { return }
+        lastSentResize = size
         var frame = Data([TerminalControlFrame.resize])
-        var colsBE = cols.bigEndian
-        var rowsBE = rows.bigEndian
-        frame.append(Data(bytes: &colsBE, count: MemoryLayout<UInt16>.size))
-        frame.append(Data(bytes: &rowsBE, count: MemoryLayout<UInt16>.size))
-        return frame
+        var cols = size.0.bigEndian
+        var rows = size.1.bigEndian
+        frame.append(Data(bytes: &cols, count: 2))
+        frame.append(Data(bytes: &rows, count: 2))
+        send(frame, on: socket)
+    }
+
+    private func receive(on socket: TerminalWebSocketTask) {
+        socket.receive { [weak self, weak socket] result in
+            guard let self, let socket else { return }
+            self.queue.async { [weak self] in
+                guard let self, self.socket === socket, !self.isClosed else { return }
+                do {
+                    guard case .data(let data) = try result.get() else { throw HubError.invalidResponse }
+                    let wasReady = self.decoder.isReady
+                    let payload = try self.decoder.receive(data)
+                    if let offset = self.decoder.offset { self.onOutputReceived?(payload, offset) }
+                    if !wasReady && self.decoder.isReady {
+                        self.isReady = true
+                        self.onConnected?()
+                        self.flushResize()
+                        let input = self.pendingInput
+                        self.pendingInput.removeAll()
+                        self.pendingInputBytes = 0
+                        for frame in input { self.send(frame, on: socket) }
+                    }
+                    self.receive(on: socket)
+                } catch { self.fail() }
+            }
+        }
+    }
+
+    private func send(_ data: Data, on socket: TerminalWebSocketTask) {
+        socket.send(.data(data)) { [weak self, weak socket] error in
+            guard error != nil, let self, let socket else { return }
+            self.queue.async { [weak self] in
+                guard let self, self.socket === socket else { return }
+                self.fail()
+            }
+        }
+    }
+
+    private func fail() {
+        guard !isClosed else { return }
+        isClosed = true
+        isReady = false
+        pinger?.cancel()
+        pinger = nil
+        socket?.cancel(with: .goingAway, reason: nil)
+        socket = nil
+        pendingInput.removeAll()
+        pendingInputBytes = 0
+        onDisconnected?()
+    }
+}
+
+/// v3 sends the offset of the first payload byte, not the end of the snapshot.
+/// Advancing only on delivered bytes prevents both duplicate live output and
+/// loss when a connection closes halfway through replaying its history.
+struct TerminalStreamDecoder {
+    private var prefix = Data()
+    private(set) var offset: UInt64?
+    var isReady: Bool { offset != nil }
+
+    mutating func receive(_ data: Data) throws -> Data {
+        var payload = data
+        if offset == nil {
+            prefix.append(data)
+            guard prefix.count >= 8 else { return Data() }
+            offset = prefix.prefix(8).reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+            payload = Data(prefix.dropFirst(8))
+            prefix.removeAll()
+        }
+        let (next, overflow) = offset!.addingReportingOverflow(UInt64(payload.count))
+        guard !overflow else { throw HubError.invalidResponse }
+        offset = next
+        return payload
     }
 }
 

@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fil — Privacy</title>
+<style>
+:root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+body { max-width: 46rem; margin: 3rem auto; padding: 0 1.25rem; line-height: 1.65; }
+h1,h2 { line-height: 1.2; } a { color: inherit; }
+</style>
+<main>
+<h1>Fil — Privacy</h1>
+<p>Updated September 19, 2026.</p>
+<h2>Account, device and session information</h2>
+<p>The hub stores your Apple or GitHub account identifier, optional verified email and display name, and registered device information in SQLite. Session metadata includes the machine name, running program, working directory, terminal size and session timestamps.</p>
+<h2>Terminal content</h2>
+<p>Terminal input and output are encrypted in transit between your devices and the hub. The hub decrypts and relays this content and maintains a bounded in-memory replay buffer for reconnection. This is <strong>not end-to-end encryption</strong>: the hub operator can access relayed content. Use a hub you trust. Terminal commands have the permissions of the shell they run in; Fil does not separately upload your filesystem.</p>
+<h2>Live Activities and widgets</h2>
+<p>If you choose to follow a session, Fil can show its status and permitted metadata on your lock screen, Dynamic Island and associated system surfaces. Apple push notification tokens and activity registrations are stored on the hub while registered. Apple processes Live Activity updates for delivery. Use the Private display option to hide identifying metadata, or stop following to remove the activity. Stopping an activity does not stop your terminal session.</p>
+<h2>Storage and deletion</h2>
+<p>Account and device records persist until deleted. Terminal replay buffers are held in memory rather than the account database. Operational logs may contain connection metadata. A hub operator's backups and retention practices depend on their deployment. You can delete your account in Fil settings; this removes its account, device, provider-link and Live Activity registration records from the active hub database.</p>
+<h2>Analytics</h2>
+<p>Fil does not include third-party advertising or analytics SDKs. Network providers involved in your connection, authentication and push delivery process their own service data.</p>
+<h2>Questions</h2>
+<p>For this open-source project, contact the maintainer through <a href="https://github.com/Remenby31/fil/issues">GitHub</a>. For a self-hosted deployment, contact its operator about access, backups and retention.</p>
+</main>
+</html>
