@@ -23,7 +23,7 @@ pub fn open(path: &Path) -> io::Result<File> {
         .create(true)
         .truncate(false)
         .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)?;
     validate(&file, true)?;
     Ok(file)
@@ -32,10 +32,28 @@ pub fn open(path: &Path) -> io::Result<File> {
 pub fn read(path: &Path) -> io::Result<File> {
     let file = OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)?;
     validate(&file, false)?;
     Ok(file)
+}
+
+/// A historical shared-path log may belong to another installation/user. Do
+/// not let unrelated files, links or FIFOs disable an otherwise private daemon.
+pub fn harden_owned_legacy_log(path: &Path) -> io::Result<()> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if metadata.is_file()
+        && metadata.nlink() == 1
+        && metadata.uid() == unsafe { libc::geteuid() }
+        && metadata.permissions().mode() & 0o077 != 0
+    {
+        read(path)?;
+    }
+    Ok(())
 }
 
 fn validate(file: &File, writable: bool) -> io::Result<()> {
@@ -68,6 +86,40 @@ pub fn write(path: &Path, contents: &[u8]) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn special_files_and_legacy_symlinks_do_not_hang_or_modify_their_target() {
+        let root = std::env::temp_dir().join(format!("fil-special-{}", uuid::Uuid::new_v4()));
+        directory(&root).unwrap();
+        let fifo = root.join("fifo");
+        let path = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+        harden_owned_legacy_log(&fifo).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(read(&fifo).is_err());
+        });
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_secs(1))
+                .expect("FIFO read must not block")
+        );
+        let target = root.join("other");
+        fs::write(&target, b"unchanged").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
+        let link = root.join("legacy-log");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        harden_owned_legacy_log(&link).unwrap();
+        assert_eq!(
+            fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
+        harden_owned_legacy_log(&target).unwrap();
+        assert_eq!(
+            fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn private_storage_repairs_modes_preserves_data_and_rejects_links() {

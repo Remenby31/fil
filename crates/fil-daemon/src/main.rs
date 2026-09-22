@@ -23,9 +23,7 @@ async fn main() -> Result<()> {
     #[cfg(target_os = "macos")]
     {
         let legacy_log = std::path::Path::new("/tmp/fil-daemon.log");
-        if legacy_log.exists() {
-            fil_protocol::private_fs::read(legacy_log)?;
-        }
+        fil_protocol::private_fs::harden_owned_legacy_log(legacy_log)?;
     }
     let current_log = DaemonConfig::config_dir().join("daemon.log");
     if current_log.exists() {
