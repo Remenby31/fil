@@ -13,6 +13,7 @@ pub struct AppState {
     pub tickets: TicketStore,
     pub quic_certificate: String,
     pub quic_router: std::sync::Arc<crate::quic::QuicRouter>,
+    pub admission_budget: crate::security::AdmissionBudget,
 }
 
 impl AppState {
@@ -32,6 +33,7 @@ impl AppState {
             tickets: TicketStore::new(),
             quic_certificate,
             quic_router: std::sync::Arc::new(crate::quic::QuicRouter::new()),
+            admission_budget: crate::security::AdmissionBudget::default(),
         })
     }
 }
@@ -46,6 +48,8 @@ pub async fn test_state() -> AppState {
         github_client_secret: "test-secret".into(),
         apple_client_id: "sh.fil.app".into(),
         public_url: "http://localhost".into(),
+        trusted_proxy_ips: Vec::new(),
+        legacy_ws_token_until: None,
         quic_port: 0,
         data_dir: std::env::temp_dir()
             .join(format!("fil-test-{}", uuid::Uuid::new_v4()))

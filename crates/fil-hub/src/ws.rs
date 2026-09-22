@@ -34,9 +34,11 @@ pub async fn ws_handler(
     match device {
         Ok(Some((device_id, user_id, device_name))) => {
             info!(device_id = %device_id, user_id = %user_id, "WebSocket connection accepted");
-            ws.on_upgrade(move |socket| {
-                handle_socket(socket, device_id, user_id, device_name, state)
-            })
+            ws.max_message_size(256 * 1024)
+                .max_frame_size(256 * 1024)
+                .on_upgrade(move |socket| {
+                    handle_socket(socket, device_id, user_id, device_name, state)
+                })
         }
         _ => {
             warn!(device_id = %params.device_id, "WebSocket connection rejected: unknown device");
@@ -54,10 +56,28 @@ async fn handle_socket(
 ) {
     let (mut sender, mut receiver) = socket.split();
 
+    let admission = state.quic_router.admission.lock().await;
+    // An HTTP upgrade can finish after DELETE. Recheck under the same gate as
+    // deletion before recreating any in-memory state.
+    let exists =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM devices WHERE id = ? AND user_id = ?")
+            .bind(&device_id)
+            .bind(&user_id)
+            .fetch_one(&state.db.pool)
+            .await;
+    if !matches!(exists, Ok(1)) {
+        return;
+    }
+
     // Register device as connected
     state
         .sessions
         .register_device(&device_id, &user_id, &device_name);
+    let access = state
+        .sessions
+        .device_access(&device_id)
+        .expect("registered device has access");
+    drop(admission);
     info!(device_id = %device_id, "device connected");
 
     // Update last_seen
@@ -67,10 +87,19 @@ async fn handle_socket(
         .await;
 
     // Process incoming messages from the daemon
-    while let Some(msg) = receiver.next().await {
+    loop {
+        let msg = tokio::select! {
+            biased;
+            _ = access.cancelled() => break,
+            msg = receiver.next() => match msg { Some(msg) => msg, None => break },
+        };
         match msg {
             Ok(Message::Binary(data)) => {
                 if let Ok(daemon_msg) = proto::DaemonMessage::decode(data.as_ref()) {
+                    let _admission = state.quic_router.admission.lock().await;
+                    if access.is_cancelled() {
+                        break;
+                    }
                     handle_daemon_message(&daemon_msg, &device_id, &user_id, &state).await;
                 }
             }

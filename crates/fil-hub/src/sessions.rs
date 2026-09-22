@@ -3,6 +3,7 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use tokio::sync::broadcast;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct SessionInfo {
@@ -47,6 +48,7 @@ pub struct SessionRegistry {
     // Globally reserve IDs to authenticated devices, including offline/omitted
     // sessions. Always lock devices before owners; claims and mutations are atomic.
     session_owners: Arc<RwLock<HashMap<String, String>>>,
+    device_access: Arc<RwLock<HashMap<String, CancellationToken>>>,
     updates: broadcast::Sender<UserSessionUpdate>,
 }
 
@@ -56,6 +58,7 @@ impl SessionRegistry {
         Self {
             devices: Arc::new(RwLock::new(HashMap::new())),
             session_owners: Arc::new(RwLock::new(HashMap::new())),
+            device_access: Arc::new(RwLock::new(HashMap::new())),
             updates,
         }
     }
@@ -67,6 +70,11 @@ impl SessionRegistry {
     pub fn register_device(&self, device_id: &str, user_id: &str, device_name: &str) {
         {
             let mut devices = self.devices.write().unwrap();
+            self.device_access
+                .write()
+                .unwrap()
+                .entry(device_id.to_string())
+                .or_default();
             let device = devices
                 .entry(device_id.to_string())
                 .or_insert_with(|| DeviceState {
@@ -255,12 +263,48 @@ impl SessionRegistry {
     }
 
     pub fn owns_session(&self, user_id: &str, session_id: &str) -> bool {
-        self.get_user_sessions(user_id).iter().any(|device| {
-            device
-                .sessions
+        self.session_access(user_id, session_id).is_some()
+    }
+
+    pub fn device_access(&self, device_id: &str) -> Option<CancellationToken> {
+        self.device_access.read().unwrap().get(device_id).cloned()
+    }
+
+    pub fn session_access(&self, user_id: &str, session_id: &str) -> Option<CancellationToken> {
+        let devices = self.devices.read().unwrap();
+        let device = devices.values().find(|device| {
+            device.user_id == user_id
+                && device
+                    .sessions
+                    .iter()
+                    .any(|session| session.session_id == session_id)
+        })?;
+        self.device_access(&device.device_id)
+    }
+
+    /// Caller serializes this with connection admission. Cancel before exposing
+    /// released IDs, and return omitted reservations as well as visible sessions.
+    pub fn remove_device(&self, user_id: &str, device_id: &str) -> Vec<String> {
+        let removed = {
+            let mut devices = self.devices.write().unwrap();
+            if devices.get(device_id).is_none_or(|d| d.user_id != user_id) {
+                return Vec::new();
+            }
+            if let Some(access) = self.device_access.write().unwrap().remove(device_id) {
+                access.cancel();
+            }
+            devices.remove(device_id);
+            let mut owners = self.session_owners.write().unwrap();
+            let removed: Vec<_> = owners
                 .iter()
-                .any(|session| session.session_id == session_id)
-        })
+                .filter(|(_, owner)| *owner == device_id)
+                .map(|(sid, _)| sid.clone())
+                .collect();
+            owners.retain(|_, owner| owner != device_id);
+            removed
+        };
+        self.publish(user_id);
+        removed
     }
 
     pub fn set_device_connected(&self, device_id: &str, connected: bool) {
@@ -328,6 +372,12 @@ impl SessionRegistry {
     pub fn remove_user(&self, user_id: &str) {
         {
             let mut devices = self.devices.write().unwrap();
+            let mut access = self.device_access.write().unwrap();
+            for device in devices.values().filter(|device| device.user_id == user_id) {
+                if let Some(token) = access.remove(&device.device_id) {
+                    token.cancel();
+                }
+            }
             devices.retain(|_, device| device.user_id != user_id);
             self.session_owners
                 .write()

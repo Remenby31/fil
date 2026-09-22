@@ -1,6 +1,5 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,11 +65,10 @@ impl DaemonConfig {
 
     pub fn save(&self) -> Result<()> {
         let dir = Self::config_dir();
-        std::fs::create_dir_all(&dir)?;
+        fil_protocol::private_fs::directory(&dir)?;
         let content = toml::to_string_pretty(self)?;
         let path = Self::config_path();
-        std::fs::write(&path, content)?;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        fil_protocol::private_fs::write(&path, content.as_bytes())?;
         Ok(())
     }
 

@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 fil-protocol = { path = "../fil-protocol" }
 tokio = { workspace = true }
+tokio-util = { version = "0.7", features = ["rt"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
@@ -22,8 +23,8 @@ serde_json = { workspace = true }
 axum = { version = "0.8", features = ["ws"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
-jsonwebtoken = "9"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "derive"] }
+jsonwebtoken = { version = "10.3", features = ["aws_lc_rs"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "http2", "rustls-tls"] }
 futures-util = "0.3"
 prost = { workspace = true }
@@ -33,3 +34,4 @@ rustls = { workspace = true }
 rcgen = { workspace = true }
 ring = "0.17"
 rand = "0.9"
+url = "2"

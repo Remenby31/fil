@@ -7,6 +7,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 use tokio::sync::{RwLock, mpsc};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::quic_certs::QuicCerts;
@@ -122,6 +123,8 @@ impl ScrollbackBuffer {
 
 /// Routes bytes between daemons and attached clients
 pub struct QuicRouter {
+    /// Serialize revocation and admission, never held during network I/O.
+    pub admission: tokio::sync::Mutex<()>,
     /// session_id → list of attached clients
     clients: Arc<RwLock<HashMap<String, Vec<AttachedClient>>>>,
     /// session_id → the daemon's command stream, tagged with the generation
@@ -141,6 +144,7 @@ struct RegisteredDaemon {
 impl QuicRouter {
     pub fn new() -> Self {
         Self {
+            admission: tokio::sync::Mutex::new(()),
             clients: Arc::new(RwLock::new(HashMap::new())),
             daemon_inputs: Arc::new(RwLock::new(HashMap::new())),
             scrollback: Arc::new(RwLock::new(HashMap::new())),
@@ -173,6 +177,50 @@ impl QuicRouter {
                 {
                     client.sender = None;
                 }
+            }
+        }
+    }
+
+    pub async fn forward_authorized(
+        &self,
+        session_id: &str,
+        access: &CancellationToken,
+        data: &[u8],
+    ) {
+        let _admission = self.admission.lock().await;
+        if !access.is_cancelled() {
+            self.forward_to_clients(session_id, data).await;
+        }
+    }
+
+    pub async fn command_authorized(
+        &self,
+        session_id: &str,
+        access: &CancellationToken,
+        sessions: &SessionRegistry,
+        command: DaemonCommand,
+    ) {
+        let sender = {
+            let _admission = self.admission.lock().await;
+            if access.is_cancelled() {
+                return;
+            }
+            if let DaemonCommand::Resize { cols, rows } = &command {
+                sessions.update_session_size(session_id, u32::from(*cols), u32::from(*rows));
+            }
+            self.daemon_inputs
+                .read()
+                .await
+                .get(session_id)
+                .map(|d| d.sender.clone())
+        };
+        // Never hold the routing/admission locks across backpressure. The sender
+        // remains bound to the old generation even if this ID is later reused.
+        if let Some(sender) = sender {
+            tokio::select! {
+                biased;
+                _ = access.cancelled() => {},
+                _ = sender.send(command) => {},
             }
         }
     }
@@ -257,21 +305,12 @@ impl QuicRouter {
         generation
     }
 
+    #[cfg(test)]
     pub async fn send_to_daemon(&self, session_id: &str, data: &[u8]) {
         let inputs = self.daemon_inputs.read().await;
         if let Some(d) = inputs.get(session_id) {
             d.sender
                 .send(DaemonCommand::Input(data.to_vec()))
-                .await
-                .ok();
-        }
-    }
-
-    pub async fn resize_daemon(&self, session_id: &str, cols: u16, rows: u16) {
-        let inputs = self.daemon_inputs.read().await;
-        if let Some(d) = inputs.get(session_id) {
-            d.sender
-                .send(DaemonCommand::Resize { cols, rows })
                 .await
                 .ok();
         }
@@ -305,20 +344,6 @@ impl QuicRouter {
         self.clients.write().await.remove(session_id);
         self.daemon_inputs.write().await.remove(session_id);
         self.scrollback.write().await.remove(session_id);
-    }
-
-    pub async fn notify_daemon_client_attached(&self, session_id: &str) {
-        let inputs = self.daemon_inputs.read().await;
-        if let Some(d) = inputs.get(session_id) {
-            d.sender.send(DaemonCommand::ClientAttached).await.ok();
-        }
-    }
-
-    pub async fn notify_daemon_client_detached(&self, session_id: &str) {
-        let inputs = self.daemon_inputs.read().await;
-        if let Some(d) = inputs.get(session_id) {
-            d.sender.send(DaemonCommand::ClientDetached).await.ok();
-        }
     }
 }
 
@@ -438,7 +463,7 @@ async fn handle_stream(
             let mut sid_buf = vec![0u8; sid_len];
             recv.read_exact(&mut sid_buf).await?;
             let session_id = String::from_utf8(sid_buf)?;
-
+            let mut access = CancellationToken::new();
             if header[0] == 0x11 {
                 recv.read_exact(&mut len_buf).await?;
                 let ticket_len = usize::from(u16::from_be_bytes(len_buf));
@@ -449,17 +474,19 @@ async fn handle_stream(
                 let user_id = tickets
                     .redeem(&ticket, &format!("daemon:{session_id}"))
                     .ok_or_else(|| anyhow::anyhow!("invalid daemon ticket"))?;
-                anyhow::ensure!(
-                    sessions.owns_session(&user_id, &session_id),
-                    "session no longer authorized"
-                );
+                access = sessions
+                    .session_access(&user_id, &session_id)
+                    .ok_or_else(|| anyhow::anyhow!("session no longer authorized"))?;
             }
 
             debug!(session_id = %session_id, "daemon data stream opened");
 
             // Register daemon input channel
+            let admission = router.admission.lock().await;
+            anyhow::ensure!(!access.is_cancelled(), "device revoked");
             let (input_tx, mut input_rx) = mpsc::channel::<DaemonCommand>(256);
             let generation = router.register_daemon_input(&session_id, input_tx).await;
+            drop(admission);
 
             // Bidirectional: read PTY output, write client input
             let router_fwd = router.clone();
@@ -471,7 +498,9 @@ async fn handle_stream(
                 loop {
                     match recv.read(&mut buf).await {
                         Ok(Some(n)) => {
-                            router_fwd.forward_to_clients(&sid_fwd, &buf[..n]).await;
+                            router_fwd
+                                .forward_authorized(&sid_fwd, &access, &buf[..n])
+                                .await;
                         }
                         Ok(None) => break,
                         Err(_) => break,
@@ -489,10 +518,13 @@ async fn handle_stream(
             };
 
             tokio::select! {
+                biased;
+                _ = access.cancelled() => {},
                 _ = read_task => {},
                 _ = write_task => {},
             }
 
+            drop(input_rx);
             router.unregister_daemon(&session_id, generation).await;
             debug!(session_id = %session_id, "daemon data stream closed");
         }
@@ -508,6 +540,7 @@ async fn handle_stream(
             let is_v2 = header[0] != 0x02;
             let is_v3 = header[0] == 0x13;
             let mut resume_from: Option<u64> = None;
+            let mut access = CancellationToken::new();
 
             // Read session_id
             let mut len_buf = [0u8; 2];
@@ -537,10 +570,9 @@ async fn handle_stream(
 
                 match tickets.redeem(&ticket, &session_id) {
                     Some(user_id) => {
-                        anyhow::ensure!(
-                            sessions.owns_session(&user_id, &session_id),
-                            "session no longer authorized"
-                        );
+                        access = sessions
+                            .session_access(&user_id, &session_id)
+                            .ok_or_else(|| anyhow::anyhow!("session no longer authorized"))?;
                         debug!(session_id = %session_id, %user_id, "attach ticket accepted");
                     }
                     None => {
@@ -564,16 +596,25 @@ async fn handle_stream(
             debug!(session_id = %session_id, "client attached to session");
 
             // Subscribe to session output + get scrollback catch-up
+            let admission = router.admission.lock().await;
+            anyhow::ensure!(!access.is_cancelled(), "device revoked");
             let (client_id, first_client, mut output_rx, catchup, stream_offset) =
                 router.attach_client(&session_id, resume_from).await;
-
-            if first_client {
-                router.notify_daemon_client_attached(&session_id).await;
-            }
+            drop(admission);
 
             // Keep cleanup outside the stream body so every exit path,
             // including a catch-up write failure, emits the detach transition.
-            let stream_result: Result<()> = async {
+            let stream_body = async {
+                if first_client {
+                    router
+                        .command_authorized(
+                            &session_id,
+                            &access,
+                            &sessions,
+                            DaemonCommand::ClientAttached,
+                        )
+                        .await;
+                }
                 // v2 clients get the stream offset first so they can resume
                 // next time. v1 keeps the raw byte stream it expects.
                 if is_v2 {
@@ -603,19 +644,29 @@ async fn handle_stream(
                 let router_input = router.clone();
                 let sid_input = session_id.clone();
                 let sessions_input = sessions.clone();
+                let input_access = access.clone();
                 let recv_task = async move {
                     loop {
                         match read_client_command(&mut recv).await {
                             Ok(Some(ClientCommand::Input(data))) => {
-                                router_input.send_to_daemon(&sid_input, &data).await;
+                                router_input
+                                    .command_authorized(
+                                        &sid_input,
+                                        &input_access,
+                                        &sessions_input,
+                                        DaemonCommand::Input(data),
+                                    )
+                                    .await;
                             }
                             Ok(Some(ClientCommand::Resize { cols, rows })) => {
-                                sessions_input.update_session_size(
-                                    &sid_input,
-                                    u32::from(cols),
-                                    u32::from(rows),
-                                );
-                                router_input.resize_daemon(&sid_input, cols, rows).await;
+                                router_input
+                                    .command_authorized(
+                                        &sid_input,
+                                        &input_access,
+                                        &sessions_input,
+                                        DaemonCommand::Resize { cols, rows },
+                                    )
+                                    .await;
                             }
                             Ok(Some(ClientCommand::Detach)) | Ok(None) | Err(_) => break,
                         }
@@ -628,11 +679,22 @@ async fn handle_stream(
                 }
 
                 Ok(())
-            }
-            .await;
+            };
+            let stream_result: Result<()> = tokio::select! {
+                biased;
+                _ = access.cancelled() => Ok(()),
+                result = stream_body => result,
+            };
 
             if router.detach_client(&session_id, client_id).await {
-                router.notify_daemon_client_detached(&session_id).await;
+                router
+                    .command_authorized(
+                        &session_id,
+                        &access,
+                        &sessions,
+                        DaemonCommand::ClientDetached,
+                    )
+                    .await;
             }
             debug!(session_id = %session_id, "client detached");
             stream_result?;

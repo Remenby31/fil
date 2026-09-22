@@ -17,6 +17,7 @@ rand = "0.9"
 base64 = "0.22"
 libc = "0.2"
 rustls = { workspace = true }
+url = "2"
 
 [build-dependencies]
 prost-build = "0.13"

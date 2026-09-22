@@ -77,6 +77,21 @@ impl TicketStore {
         Some(ticket.user_id)
     }
 
+    pub fn revoke_session(&self, session_id: &str) {
+        let daemon_id = format!("daemon:{session_id}");
+        self.inner
+            .lock()
+            .unwrap()
+            .retain(|_, ticket| ticket.session_id != session_id && ticket.session_id != daemon_id);
+    }
+
+    pub fn revoke_user(&self, user_id: &str) {
+        self.inner
+            .lock()
+            .unwrap()
+            .retain(|_, ticket| ticket.user_id != user_id);
+    }
+
     fn prune(store: &mut HashMap<String, Ticket>) {
         let now = Instant::now();
         store.retain(|_, ticket| ticket.expires_at > now);

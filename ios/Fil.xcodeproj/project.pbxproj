@@ -48,6 +48,7 @@
 		D225D8D984A1DBAFBAD2461B /* ConnectionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57AA6BB3644A2589E0AA351C /* ConnectionManager.swift */; };
 		E897C1FEE5EE4ACBB9B15769 /* MachinesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8AB6AB119A61CB64AEF9DA5 /* MachinesView.swift */; };
 		EAC7F77EA8E3EF3DDA9EA187 /* AppView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4AEC0FCF72E497E28644462 /* AppView.swift */; };
+		EC3D48573D25D000A971A1A8 /* SessionEventSecurityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE0BB7E9EDBBD1438F53DCB6 /* SessionEventSecurityTests.swift */; };
 		FC0247FD05FDD69F3603710E /* AuthView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65BF9A1115E3EA9EEAB9F972 /* AuthView.swift */; };
 /* End PBXBuildFile section */
 
@@ -120,6 +121,7 @@
 		DEFFC4E235C1135FAA311A5D /* HubWebSocket.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubWebSocket.swift; sourceTree = "<group>"; };
 		E0A495137D637D6F090DB9CC /* FilNotification.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilNotification.swift; sourceTree = "<group>"; };
 		E44FCB35748BE68799D3DBBA /* SessionEventClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionEventClient.swift; sourceTree = "<group>"; };
+		EE0BB7E9EDBBD1438F53DCB6 /* SessionEventSecurityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionEventSecurityTests.swift; sourceTree = "<group>"; };
 		F24E0F94DFA6D6B2E29BF4E8 /* .gitkeep */ = {isa = PBXFileReference; path = .gitkeep; sourceTree = "<group>"; };
 		F866DD64C5272CF45F4867A3 /* FilApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilApp.swift; sourceTree = "<group>"; };
 		F8C23BC2602A63EE215567C9 /* AppFeature.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppFeature.swift; sourceTree = "<group>"; };
@@ -282,6 +284,7 @@
 		D2081DF4A5FA1101DC77176E /* FilTests */ = {
 			isa = PBXGroup;
 			children = (
+				EE0BB7E9EDBBD1438F53DCB6 /* SessionEventSecurityTests.swift */,
 				08E11B23F0EFD1A4C37E450D /* TerminalConnectionSpeedTests.swift */,
 				FE5677E717AB2F879DC39F68 /* TerminalSessionTests.swift */,
 			);
@@ -486,6 +489,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				EC3D48573D25D000A971A1A8 /* SessionEventSecurityTests.swift in Sources */,
 				5BA4130143D85D73EC3AEEAE /* TerminalConnectionSpeedTests.swift in Sources */,
 				250E3FCCDCE0543A4E0D3388 /* TerminalSessionTests.swift in Sources */,
 			);
@@ -588,7 +592,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 28;
+				CURRENT_PROJECT_VERSION = 29;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = 3SNT64YKAS;
 				ENABLE_NS_ASSERTIONS = NO;
@@ -714,7 +718,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 28;
+				CURRENT_PROJECT_VERSION = 29;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = 3SNT64YKAS;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;

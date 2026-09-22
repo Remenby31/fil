@@ -6,11 +6,16 @@ use crate::auth::AuthUser;
 use crate::state::AppState;
 
 pub async fn delete_account(auth: AuthUser, State(state): State<AppState>) -> StatusCode {
+    let _admission = state.quic_router.admission.lock().await;
     match delete_account_data(&state, &auth.user_id).await {
         Ok(true) => {
+            state.tickets.revoke_user(&auth.user_id);
             for device in state.sessions.get_user_sessions(&auth.user_id) {
-                for session in device.sessions {
-                    state.quic_router.forget_session(&session.session_id).await;
+                for session_id in state
+                    .sessions
+                    .remove_device(&auth.user_id, &device.device_id)
+                {
+                    state.quic_router.forget_session(&session_id).await;
                 }
             }
             state.sessions.remove_user(&auth.user_id);
@@ -83,6 +88,8 @@ mod tests {
             github_client_secret: String::new(),
             apple_client_id: String::new(),
             public_url: "http://localhost".into(),
+            trusted_proxy_ips: Vec::new(),
+            legacy_ws_token_until: None,
             quic_port: 0,
             data_dir: std::env::temp_dir().display().to_string(),
             apns: None,

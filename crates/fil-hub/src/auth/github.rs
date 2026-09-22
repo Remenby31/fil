@@ -59,17 +59,27 @@ pub async fn github_auth_start(
     }
     let oauth_state = Uuid::new_v4().to_string();
 
+    if sqlx::query("DELETE FROM oauth_states WHERE created_at < datetime('now', '-10 minutes')")
+        .execute(&state.db.pool)
+        .await
+        .is_err()
+    {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+
     // Store state + optional CLI callback for later
-    if sqlx::query(
-        "INSERT INTO oauth_states (state, provider, cli_callback) VALUES (?, 'github', ?)",
+    let inserted = sqlx::query(
+        "INSERT INTO oauth_states (state, provider, cli_callback)
+         SELECT ?, 'github', ? WHERE (SELECT COUNT(*) FROM oauth_states) < 10000",
     )
     .bind(&oauth_state)
     .bind(&cli_callback)
     .execute(&state.db.pool)
-    .await
-    .is_err()
-    {
-        return axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    .await;
+    match inserted {
+        Ok(result) if result.rows_affected() == 1 => {}
+        Ok(_) => return StatusCode::TOO_MANY_REQUESTS.into_response(),
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 
     let url = reqwest::Url::parse_with_params(

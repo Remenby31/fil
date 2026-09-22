@@ -18,6 +18,10 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
+    fil_protocol::private_fs::directory(&DaemonConfig::config_dir())?;
+    if DaemonConfig::config_path().exists() {
+        fil_protocol::private_fs::open(&DaemonConfig::config_path())?;
+    }
     let config = DaemonConfig::load();
     if !config.is_configured() {
         anyhow::bail!("fil is not configured. Run `fil setup` first.");

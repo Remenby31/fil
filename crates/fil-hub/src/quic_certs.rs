@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::io::Read;
 use std::path::Path;
 use tracing::info;
 
@@ -14,7 +15,8 @@ impl QuicCerts {
 
         if cert_path.exists() && key_path.exists() {
             let cert_der = std::fs::read(&cert_path)?;
-            let key_der = std::fs::read(&key_path)?;
+            let mut key_der = Vec::new();
+            fil_protocol::private_fs::open(&key_path)?.read_to_end(&mut key_der)?;
             info!("loaded existing QUIC certificates");
             return Ok(Self { cert_der, key_der });
         }
@@ -36,7 +38,7 @@ impl QuicCerts {
 
         std::fs::create_dir_all(data_dir)?;
         std::fs::write(&cert_path, &cert_der)?;
-        std::fs::write(&key_path, &key_der)?;
+        fil_protocol::private_fs::write(&key_path, &key_der)?;
 
         info!("generated new QUIC certificates");
         Ok(Self { cert_der, key_der })

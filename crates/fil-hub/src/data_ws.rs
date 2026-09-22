@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::{Instant, timeout};
+use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 use crate::auth::AuthUser;
@@ -44,9 +45,9 @@ pub async fn data_ws_handler(
     Query(params): Query<DataWsParams>,
     ws: WebSocketUpgrade,
 ) -> Response {
-    if let Err(status) = authorize_session(&state.sessions, &auth.user_id, &session_id) {
-        return status.into_response();
-    }
+    let Some(access) = state.sessions.session_access(&auth.user_id, &session_id) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
     ws.max_message_size(MAX_MESSAGE_BYTES)
         .max_frame_size(MAX_MESSAGE_BYTES)
         .write_buffer_size(0)
@@ -58,7 +59,7 @@ pub async fn data_ws_handler(
             }
             match params.role {
                 Role::Daemon => {
-                    daemon_socket(socket, &state.quic_router, &session_id).await;
+                    daemon_socket(socket, &state.quic_router, &session_id, access).await;
                 }
                 Role::Client => {
                     client_socket(
@@ -67,6 +68,7 @@ pub async fn data_ws_handler(
                         &state.sessions,
                         &session_id,
                         params.resume_from,
+                        access,
                     )
                     .await;
                 }
@@ -143,13 +145,22 @@ async fn send<S: Sink<Message> + Unpin>(
         .map_err(|_| "WebSocket write failed")
 }
 
-async fn daemon_socket<S, E>(mut socket: S, router: &Arc<QuicRouter>, session_id: &str)
-where
+async fn daemon_socket<S, E>(
+    mut socket: S,
+    router: &Arc<QuicRouter>,
+    session_id: &str,
+    access: CancellationToken,
+) where
     S: Sink<Message> + Stream<Item = Result<Message, E>> + Unpin,
 {
+    let admission = router.admission.lock().await;
+    if access.is_cancelled() {
+        return;
+    }
     let (input_tx, mut input_rx) = mpsc::channel(256);
     let generation = router.register_daemon_input(session_id, input_tx).await;
-    let result: Result<(), &'static str> = async {
+    drop(admission);
+    let body = async {
         let mut ticker = tokio::time::interval(KEEPALIVE);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut last_seen = Instant::now();
@@ -162,7 +173,7 @@ where
                 message = socket.next() => {
                     last_seen = Instant::now();
                     match message {
-                        Some(Ok(Message::Binary(data))) => router.forward_to_clients(session_id, &data).await,
+                        Some(Ok(Message::Binary(data))) => router.forward_authorized(session_id, &access, &data).await,
                         Some(Ok(Message::Ping(data))) => send(&mut socket, Message::Pong(data)).await?,
                         Some(Ok(Message::Pong(_))) => {},
                         Some(Ok(Message::Close(_))) | None => return Ok(()),
@@ -176,7 +187,12 @@ where
                 }
             }
         }
-    }.await;
+    };
+    let result: Result<(), &'static str> = tokio::select! {
+        biased;
+        _ = access.cancelled() => Ok(()),
+        result = body => result,
+    };
     // Drop the receiver first: blocked router senders must release their locks.
     drop(input_rx);
     router.unregister_daemon(session_id, generation).await;
@@ -190,19 +206,38 @@ async fn client_socket<S, E>(
     sessions: &SessionRegistry,
     session_id: &str,
     resume_from: Option<u64>,
+    access: CancellationToken,
 ) where
     S: Sink<Message> + Stream<Item = Result<Message, E>> + Unpin,
 {
+    let admission = router.admission.lock().await;
+    if access.is_cancelled() {
+        return;
+    }
     let (client_id, first, mut output_rx, catchup, end_offset) =
         router.attach_client(session_id, resume_from).await;
+    drop(admission);
     // Every fallible operation after registration is inside this block.
-    let result: Result<(), &'static str> = async {
+    let body = async {
         if first {
-            timeout(IO_TIMEOUT, router.notify_daemon_client_attached(session_id))
-                .await.map_err(|_| "daemon notification timed out")?;
+            timeout(
+                IO_TIMEOUT,
+                router.command_authorized(
+                    session_id,
+                    &access,
+                    sessions,
+                    DaemonCommand::ClientAttached,
+                ),
+            )
+            .await
+            .map_err(|_| "daemon notification timed out")?;
         }
         let start = end_offset - catchup.len() as u64;
-        send(&mut socket, Message::Binary(start.to_be_bytes().to_vec().into())).await?;
+        send(
+            &mut socket,
+            Message::Binary(start.to_be_bytes().to_vec().into()),
+        )
+        .await?;
         if !catchup.is_empty() {
             send(&mut socket, Message::Binary(catchup.into())).await?;
         }
@@ -220,12 +255,11 @@ async fn client_socket<S, E>(
                     match message {
                         Some(Ok(Message::Binary(data))) => match parse_client_command(&data)? {
                             ClientCommand::Input(data) => {
-                                timeout(IO_TIMEOUT, router.send_to_daemon(session_id, &data))
+                                timeout(IO_TIMEOUT, router.command_authorized(session_id, &access, sessions, DaemonCommand::Input(data)))
                                     .await.map_err(|_| "daemon input timed out")?;
                             }
                             ClientCommand::Resize { cols, rows } => {
-                                sessions.update_session_size(session_id, u32::from(cols), u32::from(rows));
-                                timeout(IO_TIMEOUT, router.resize_daemon(session_id, cols, rows))
+                                timeout(IO_TIMEOUT, router.command_authorized(session_id, &access, sessions, DaemonCommand::Resize { cols, rows }))
                                     .await.map_err(|_| "daemon resize timed out")?;
                             }
                             ClientCommand::Detach => return Ok(()),
@@ -243,10 +277,19 @@ async fn client_socket<S, E>(
                 }
             }
         }
-    }.await;
+    };
+    let result: Result<(), &'static str> = tokio::select! {
+        biased;
+        _ = access.cancelled() => Ok(()),
+        result = body => result,
+    };
     drop(output_rx);
     if router.detach_client(session_id, client_id).await {
-        let _ = timeout(IO_TIMEOUT, router.notify_daemon_client_detached(session_id)).await;
+        let _ = timeout(
+            IO_TIMEOUT,
+            router.command_authorized(session_id, &access, sessions, DaemonCommand::ClientDetached),
+        )
+        .await;
     }
     let _ = timeout(Duration::from_secs(1), socket.close()).await;
     debug!(%session_id, reason = result.err().unwrap_or("closed"), "client data WebSocket ended");
@@ -423,7 +466,15 @@ mod tests {
             router.register_daemon_input("sid", daemon_tx).await;
             let (mut socket, _input, _output) = socket_pair();
             socket.fail_after = fail_after;
-            client_socket(socket, &router, &sessions(), "sid", None).await;
+            client_socket(
+                socket,
+                &router,
+                &sessions(),
+                "sid",
+                None,
+                CancellationToken::new(),
+            )
+            .await;
             assert!(matches!(
                 daemon_rx.try_recv(),
                 Ok(DaemonCommand::ClientAttached)
@@ -450,9 +501,17 @@ mod tests {
         let task = {
             let router = router.clone();
             let sessions = sessions.clone();
-            tokio::spawn(
-                async move { client_socket(socket, &router, &sessions, "sid", Some(3)).await },
-            )
+            tokio::spawn(async move {
+                client_socket(
+                    socket,
+                    &router,
+                    &sessions,
+                    "sid",
+                    Some(3),
+                    CancellationToken::new(),
+                )
+                .await
+            })
         };
         assert_eq!(binary(&mut output).await, 3u64.to_be_bytes());
         assert_eq!(binary(&mut output).await, b"def");
@@ -497,7 +556,9 @@ mod tests {
         let (socket, input, mut output) = socket_pair();
         let task = {
             let router = router.clone();
-            tokio::spawn(async move { daemon_socket(socket, &router, "sid").await })
+            tokio::spawn(async move {
+                daemon_socket(socket, &router, "sid", CancellationToken::new()).await
+            })
         };
         // First ping is sent only after registration.
         assert!(matches!(
@@ -535,7 +596,7 @@ mod tests {
         let router = Arc::new(QuicRouter::new());
         let (mut socket, _input, _output) = socket_pair();
         socket.fail_after = 0;
-        daemon_socket(socket, &router, "sid").await;
+        daemon_socket(socket, &router, "sid", CancellationToken::new()).await;
         // This must not block on an orphaned, full daemon command queue.
         timeout(Duration::from_secs(2), async {
             for _ in 0..300 {
@@ -553,7 +614,15 @@ mod tests {
         input
             .send(Ok(Message::Binary(vec![0, 0xff, 0xff, 0xff, 0xff].into())))
             .unwrap();
-        client_socket(socket, &router, &sessions(), "sid", None).await;
+        client_socket(
+            socket,
+            &router,
+            &sessions(),
+            "sid",
+            None,
+            CancellationToken::new(),
+        )
+        .await;
         let (id, first, _, _, _) = router.attach_client("sid", None).await;
         assert!(first);
         router.detach_client("sid", id).await;

@@ -21,10 +21,16 @@ pub async fn run(
     config: DaemonConfig,
 ) -> Result<()> {
     let listener = UnixListener::bind(sock_path)?;
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(sock_path, std::fs::Permissions::from_mode(0o600))?;
     let quic_hub = Arc::new(quic_hub);
 
     loop {
         let (stream, _) = listener.accept().await?;
+        if stream.peer_cred()?.uid() != unsafe { libc::geteuid() } {
+            warn!("rejected IPC connection from a different user");
+            continue;
+        }
         let sessions = sessions.clone();
         let ws_tx = ws_tx.clone();
         let quic_hub = quic_hub.clone();
@@ -188,7 +194,7 @@ async fn handle_proxy(
     let write_task = async {
         let mut encode_buf = Vec::with_capacity(4096);
         while let Some(cmd) = proxy_rx.recv().await {
-            info!(session = %sid_write, cmd = ?cmd, "daemon → proxy");
+            tracing::debug!(session = %sid_write, cmd = ?cmd, "daemon → proxy");
             encode_buf.clear();
             let msg = match cmd {
                 ProxyCommand::Input(data) => DaemonMessage::Input(data),

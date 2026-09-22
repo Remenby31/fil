@@ -123,7 +123,7 @@ async fn connect_ws(
 }
 
 fn build_ws_url(hub_url: &str, device_id: &str) -> Result<Url> {
-    let mut url = Url::parse(hub_url)?;
+    let mut url = fil_protocol::tls::hub_url(hub_url).map_err(anyhow::Error::msg)?;
     match url.scheme() {
         "http" => url.set_scheme("ws").ok(),
         "https" => url.set_scheme("wss").ok(),

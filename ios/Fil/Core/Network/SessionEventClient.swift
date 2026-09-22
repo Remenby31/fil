@@ -10,8 +10,9 @@ enum SessionEventClient {
 
     static func updates(
         makeSocket: @escaping @Sendable () -> TerminalWebSocketTask? = {
-            guard let token = TokenStorage.loadToken(), let url = SessionEventClient.url(token: token) else { return nil }
-            return URLSession.shared.webSocketTask(with: url)
+            guard let token = TokenStorage.loadToken(),
+                  let request = SessionEventClient.request(hubURL: TokenStorage.loadHubUrl(), token: token) else { return nil }
+            return URLSession.shared.webSocketTask(with: request)
         }
     ) -> AsyncStream<Result<[DeviceState], Error>> {
         AsyncStream { continuation in
@@ -83,11 +84,18 @@ enum SessionEventClient {
         return min(raw, maxBackoff) * Double.random(in: 0.85...1.15)
     }
 
-    private static func url(token: String) -> URL? {
-        guard var components = URLComponents(string: TokenStorage.loadHubUrl()) else { return nil }
-        components.scheme = components.scheme == "https" ? "wss" : "ws"
+    static func request(hubURL: String, token: String) -> URLRequest? {
+        guard !token.isEmpty, token.utf8.allSatisfy({ (0x21...0x7e).contains($0) }),
+              var components = URLComponents(string: hubURL),
+              components.scheme?.lowercased() == "https", components.host != nil,
+              components.user == nil, components.password == nil else { return nil }
+        components.scheme = "wss"
         components.path = "/ws/client"
-        components.queryItems = [URLQueryItem(name: "token", value: token)]
-        return components.url
+        components.query = nil
+        components.fragment = nil
+        guard let url = components.url else { return nil }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        return request
     }
 }

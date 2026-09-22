@@ -7,6 +7,7 @@ mod db;
 mod quic;
 mod quic_certs;
 mod routes;
+mod security;
 mod sessions;
 mod state;
 mod tickets;
@@ -34,6 +35,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config = Config::from_env();
+    config.validate()?;
     let addr = config.addr;
     let quic_port = config.quic_port;
     let data_dir = config.data_dir.clone();
@@ -119,7 +121,8 @@ async fn main() -> anyhow::Result<()> {
             // Query strings can contain OAuth codes or WebSocket credentials.
             tracing::info_span!("request", method = %request.method(), path = request.uri().path())
         }))
-        .layer(CorsLayer::permissive())
+        .layer(CorsLayer::new())
+        .layer(axum::middleware::from_fn_with_state(state.clone(), security::protect))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -140,9 +143,12 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
 
     info!("hub shut down gracefully");
     Ok(())

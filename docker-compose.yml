@@ -2,7 +2,7 @@ services:
   hub:
     build: .
     ports:
-      - "3100:3100"
+      - "${FIL_HTTP_BIND:-127.0.0.1}:3100:3100"
       - "16433:16433/udp"
     volumes:
       - fil-data:/data
@@ -15,6 +15,8 @@ services:
       - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET:-}
       - APPLE_CLIENT_ID=${APPLE_CLIENT_ID:-sh.fil.app}
       - PUBLIC_URL=${PUBLIC_URL:-http://localhost:3100}
+      - FIL_TRUSTED_PROXY_IPS=${FIL_TRUSTED_PROXY_IPS:-}
+      - FIL_LEGACY_WS_TOKEN_UNTIL=${FIL_LEGACY_WS_TOKEN_UNTIL:-0}
       - QUIC_PORT=${QUIC_PORT:-16433}
       - FIL_REQUIRE_ATTACH_TICKET=true
       - DATA_DIR=/data

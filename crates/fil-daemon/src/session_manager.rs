@@ -11,12 +11,26 @@ pub struct ProxySession {
     pub rows: u32,
 }
 
-#[derive(Debug)]
 pub enum ProxyCommand {
     Input(Vec<u8>),
     Resize { cols: u16, rows: u16 },
     ClientAttached,
     ClientDetached,
+}
+
+impl std::fmt::Debug for ProxyCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Input(data) => f.debug_struct("Input").field("bytes", &data.len()).finish(),
+            Self::Resize { cols, rows } => f
+                .debug_struct("Resize")
+                .field("cols", cols)
+                .field("rows", rows)
+                .finish(),
+            Self::ClientAttached => f.write_str("ClientAttached"),
+            Self::ClientDetached => f.write_str("ClientDetached"),
+        }
+    }
 }
 
 pub struct SessionManager {
@@ -77,5 +91,21 @@ impl SessionManager {
                 .then_with(|| left.session_id.cmp(&right.session_id))
         });
         infos
+    }
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+
+    #[test]
+    fn command_diagnostics_do_not_disclose_terminal_input() {
+        let diagnostic = format!("{:?}", ProxyCommand::Input(b"secret-password".to_vec()));
+        assert!(!diagnostic.contains("secret-password"));
+        assert!(
+            !diagnostic.contains("115, 101, 99"),
+            "raw input bytes leaked"
+        );
+        assert_eq!(diagnostic, "Input { bytes: 15 }");
     }
 }

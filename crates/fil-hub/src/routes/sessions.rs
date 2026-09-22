@@ -60,6 +60,7 @@ pub async fn create_session_ticket(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> Result<Json<SessionTicket>, StatusCode> {
+    let _admission = state.quic_router.admission.lock().await;
     if !state.sessions.owns_session(&auth.user_id, &session_id) {
         // Deliberately NOT_FOUND rather than FORBIDDEN: a user who does not
         // own a session should not be able to probe whether it exists.
@@ -78,6 +79,7 @@ pub async fn create_daemon_ticket(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> Result<Json<SessionTicket>, StatusCode> {
+    let _admission = state.quic_router.admission.lock().await;
     if !state.sessions.owns_session(&auth.user_id, &session_id) {
         return Err(StatusCode::NOT_FOUND);
     }

@@ -86,6 +86,7 @@ pub async fn delete_device(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
 ) -> StatusCode {
+    let _admission = state.quic_router.admission.lock().await;
     let result = sqlx::query("DELETE FROM devices WHERE id = ? AND user_id = ?")
         .bind(&device_id)
         .bind(&auth.user_id)
@@ -94,6 +95,10 @@ pub async fn delete_device(
 
     match result {
         Ok(r) if r.rows_affected() > 0 => {
+            for session_id in state.sessions.remove_device(&auth.user_id, &device_id) {
+                state.tickets.revoke_session(&session_id);
+                state.quic_router.forget_session(&session_id).await;
+            }
             debug!(device_id = %device_id, "device deleted");
             StatusCode::NO_CONTENT
         }

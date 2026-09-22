@@ -244,7 +244,7 @@ fn ticket_error(error: reqwest::Error) -> anyhow::Error {
 }
 
 fn data_url(hub_url: &str, session_id: &str, websocket: bool) -> Result<Url> {
-    let mut url = Url::parse(hub_url).map_err(|_| anyhow::anyhow!("invalid hub URL"))?;
+    let mut url = fil_protocol::tls::hub_url(hub_url).map_err(anyhow::Error::msg)?;
     anyhow::ensure!(
         url.username().is_empty() && url.password().is_none(),
         "hub URL must not contain credentials"
