@@ -48,13 +48,18 @@ fil setup
 ### Hub (self-hosted)
 
 ```bash
-docker run -d -p 3100:3100 \
-  -e JWT_SECRET=your-secret \
+docker run -d -p 127.0.0.1:3100:3100 -p 16433:16433/udp \
+  -e JWT_SECRET -e PUBLIC_URL -e FIL_TRUSTED_PROXY_IPS \
   -e GITHUB_CLIENT_ID=xxx \
   -e GITHUB_CLIENT_SECRET=xxx \
   -v fil-data:/data \
   fil/hub
 ```
+
+Set `JWT_SECRET` to a persistent random secret of at least 32 bytes,
+`PUBLIC_URL` to your HTTPS origin, and `FIL_TRUSTED_PROXY_IPS` to the exact
+immediate proxy address as seen inside the container. Terminate HTTPS at that
+proxy and keep the HTTP origin private. See [security and migration settings](docs/security-hardening.md).
 
 ActivityKit updates continue locally without APNs. To keep Live Activities current while the app is suspended, mount an Apple APNs `.p8` provider key as a Docker secret and configure:
 

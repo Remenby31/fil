@@ -87,9 +87,16 @@ enum SessionEventClient {
     static func request(hubURL: String, token: String) -> URLRequest? {
         guard !token.isEmpty, token.utf8.allSatisfy({ (0x21...0x7e).contains($0) }),
               var components = URLComponents(string: hubURL),
-              components.scheme?.lowercased() == "https", components.host != nil,
+              components.host != nil,
               components.user == nil, components.password == nil else { return nil }
-        components.scheme = "wss"
+        #if DEBUG && targetEnvironment(simulator)
+        let localHTTP = components.scheme?.lowercased() == "http"
+            && ["localhost", "127.0.0.1", "::1", "[::1]"].contains(components.host?.lowercased() ?? "")
+        #else
+        let localHTTP = false
+        #endif
+        guard components.scheme?.lowercased() == "https" || localHTTP else { return nil }
+        components.scheme = localHTTP ? "ws" : "wss"
         components.path = "/ws/client"
         components.query = nil
         components.fragment = nil

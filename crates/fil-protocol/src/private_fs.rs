@@ -25,6 +25,20 @@ pub fn open(path: &Path) -> io::Result<File> {
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW)
         .open(path)?;
+    validate(&file, true)?;
+    Ok(file)
+}
+
+pub fn read(path: &Path) -> io::Result<File> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?;
+    validate(&file, false)?;
+    Ok(file)
+}
+
+fn validate(file: &File, writable: bool) -> io::Result<()> {
     let metadata = file.metadata()?;
     if !metadata.is_file() || metadata.nlink() != 1 || metadata.uid() != unsafe { libc::geteuid() }
     {
@@ -33,8 +47,15 @@ pub fn open(path: &Path) -> io::Result<File> {
             "private file must be singly linked and owned",
         ));
     }
-    file.set_permissions(fs::Permissions::from_mode(0o600))?;
-    Ok(file)
+    let mode = if writable {
+        0o600
+    } else {
+        metadata.permissions().mode() & 0o600
+    };
+    if metadata.permissions().mode() & 0o777 != mode {
+        file.set_permissions(fs::Permissions::from_mode(mode))?;
+    }
+    Ok(())
 }
 
 pub fn write(path: &Path, contents: &[u8]) -> io::Result<()> {
@@ -69,6 +90,12 @@ mod tests {
         std::os::unix::fs::symlink(&path, &link).unwrap();
         assert!(write(&link, b"must-not-overwrite").is_err());
         assert_eq!(fs::read(&path).unwrap(), b"synthetic-key");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o400)).unwrap();
+        read(&path).unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o400
+        );
         fs::remove_dir_all(root).unwrap();
     }
 }

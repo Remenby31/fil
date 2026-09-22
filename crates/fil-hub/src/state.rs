@@ -14,6 +14,8 @@ pub struct AppState {
     pub quic_certificate: String,
     pub quic_router: std::sync::Arc<crate::quic::QuicRouter>,
     pub admission_budget: crate::security::AdmissionBudget,
+    /// DB-backed lifecycle operations use this gate, not the terminal byte path.
+    pub lifecycle: std::sync::Arc<tokio::sync::RwLock<()>>,
 }
 
 impl AppState {
@@ -34,6 +36,7 @@ impl AppState {
             quic_certificate,
             quic_router: std::sync::Arc::new(crate::quic::QuicRouter::new()),
             admission_budget: crate::security::AdmissionBudget::default(),
+            lifecycle: std::sync::Arc::new(tokio::sync::RwLock::new(())),
         })
     }
 }

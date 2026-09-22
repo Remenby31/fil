@@ -2,7 +2,7 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{Sink, SinkExt, StreamExt};
 use serde::Deserialize;
 use tracing::debug;
 
@@ -72,7 +72,9 @@ async fn client_socket(
     let (mut sender, mut receiver) = socket.split();
     let initial = state.sessions.get_user_sessions(&user_id);
     if let Ok(payload) = serde_json::to_string(&initial)
-        && sender.send(Message::Text(payload.into())).await.is_err()
+        && send(&mut sender, Message::Text(payload.into()))
+            .await
+            .is_err()
     {
         return;
     }
@@ -89,19 +91,19 @@ async fn client_socket(
                 match result {
                     Ok(update) if update.user_id == user_id => {
                         let Ok(payload) = serde_json::to_string(&update.devices) else { continue };
-                        if sender.send(Message::Text(payload.into())).await.is_err() { break; }
+                        if send(&mut sender, Message::Text(payload.into())).await.is_err() { break; }
                     }
                     Ok(_) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                         let Ok(payload) = serde_json::to_string(&state.sessions.get_user_sessions(&user_id)) else { continue };
-                        if sender.send(Message::Text(payload.into())).await.is_err() { break; }
+                        if send(&mut sender, Message::Text(payload.into())).await.is_err() { break; }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
             message = receiver.next() => {
                 match message {
-                    Some(Ok(Message::Ping(data))) if sender.send(Message::Pong(data.clone())).await.is_err() => break,
+                    Some(Ok(Message::Ping(data))) if send(&mut sender, Message::Pong(data.clone())).await.is_err() => break,
                     Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
                     _ => {}
                 }
@@ -109,6 +111,13 @@ async fn client_socket(
         }
     }
     debug!(%user_id, "iOS client WebSocket disconnected");
+}
+
+async fn send<S: Sink<Message> + Unpin>(sender: &mut S, message: Message) -> Result<(), ()> {
+    tokio::time::timeout(std::time::Duration::from_secs(5), sender.send(message))
+        .await
+        .map_err(|_| ())?
+        .map_err(|_| ())
 }
 
 #[cfg(test)]

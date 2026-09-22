@@ -26,13 +26,19 @@ impl Database {
             || url::form_urlencoded::parse(query.as_bytes())
                 .any(|(k, v)| k == "mode" && v == "memory");
         if !in_memory {
-            fil_protocol::private_fs::open(path)?;
+            if path.exists() {
+                fil_protocol::private_fs::read(path)?;
+            } else if url::form_urlencoded::parse(query.as_bytes())
+                .any(|(k, v)| k == "mode" && v == "rwc")
+            {
+                fil_protocol::private_fs::open(path)?;
+            }
             // SQLite sidecars created by earlier releases can contain the same
             // sensitive data. Do not create sidecars; only repair existing ones.
             for suffix in ["-wal", "-shm", "-journal"] {
                 let sidecar = std::path::PathBuf::from(format!("{}{suffix}", path.display()));
                 if sidecar.exists() {
-                    fil_protocol::private_fs::open(&sidecar)?;
+                    fil_protocol::private_fs::read(&sidecar)?;
                 }
             }
         }
@@ -50,5 +56,25 @@ impl Database {
 
     async fn run_migrations(&self) -> Result<()> {
         migrations::run(&self.pool).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn missing_database_requires_explicit_creation_permission() {
+        let path = std::env::temp_dir().join(format!("fil-missing-{}.db", uuid::Uuid::new_v4()));
+        assert!(
+            Database::connect(&format!("sqlite:{}?mode=rw", path.display()))
+                .await
+                .is_err()
+        );
+        assert!(!path.exists());
+        let db = Database::connect(&format!("sqlite:{}?mode=rwc", path.display()))
+            .await
+            .unwrap();
+        db.pool.close().await;
+        std::fs::remove_file(path).unwrap();
     }
 }

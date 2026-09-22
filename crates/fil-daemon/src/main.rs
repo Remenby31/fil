@@ -19,8 +19,20 @@ async fn main() -> Result<()> {
         .init();
 
     fil_protocol::private_fs::directory(&DaemonConfig::config_dir())?;
+    // Protect historical bytes on a binary-only upgrade, without re-pairing.
+    #[cfg(target_os = "macos")]
+    {
+        let legacy_log = std::path::Path::new("/tmp/fil-daemon.log");
+        if legacy_log.exists() {
+            fil_protocol::private_fs::read(legacy_log)?;
+        }
+    }
+    let current_log = DaemonConfig::config_dir().join("daemon.log");
+    if current_log.exists() {
+        fil_protocol::private_fs::read(&current_log)?;
+    }
     if DaemonConfig::config_path().exists() {
-        fil_protocol::private_fs::open(&DaemonConfig::config_path())?;
+        fil_protocol::private_fs::read(&DaemonConfig::config_path())?;
     }
     let config = DaemonConfig::load();
     if !config.is_configured() {

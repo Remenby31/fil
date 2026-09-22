@@ -16,7 +16,7 @@ impl QuicCerts {
         if cert_path.exists() && key_path.exists() {
             let cert_der = std::fs::read(&cert_path)?;
             let mut key_der = Vec::new();
-            fil_protocol::private_fs::open(&key_path)?.read_to_end(&mut key_der)?;
+            fil_protocol::private_fs::read(&key_path)?.read_to_end(&mut key_der)?;
             info!("loaded existing QUIC certificates");
             return Ok(Self { cert_der, key_der });
         }

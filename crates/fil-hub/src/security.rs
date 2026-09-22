@@ -71,11 +71,18 @@ pub async fn protect(State(state): State<AppState>, request: Request, next: Next
         .map(|v| v.0.ip().to_canonical())
         .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
     let (ip, secure) = forwarded_identity(request.headers(), peer, &state.config.trusted_proxy_ips);
-    let require_https = state.config.public_url.starts_with("https://");
+    let require_https =
+        reqwest::Url::parse(&state.config.public_url).is_ok_and(|url| url.scheme() == "https");
     let local_health = request.uri().path() == "/health"
         && peer.is_loopback()
         && !request.headers().contains_key("x-forwarded-proto");
-    let mut response = if require_https && !secure && !local_health {
+    let mut response = if !require_https && !peer.is_loopback() {
+        (
+            StatusCode::UPGRADE_REQUIRED,
+            "Development HTTP is loopback-only",
+        )
+            .into_response()
+    } else if require_https && !secure && !local_health {
         // Never reflect OAuth codes or credentials into Location, nor redirect
         // an already-authenticated plaintext request with its bearer attached.
         if matches!(*request.method(), Method::GET | Method::HEAD)
@@ -136,7 +143,7 @@ mod tests {
     async fn https_origin_rejects_spoofing_without_reflecting_credentials_and_preserves_local_health()
      {
         let mut state = crate::state::test_state().await;
-        state.config.public_url = "https://hub.example".into();
+        state.config.public_url = "HTTPS://hub.example".into();
         state.config.trusted_proxy_ips = vec!["192.0.2.1".parse().unwrap()];
         let app = axum::Router::new()
             .route("/devices", axum::routing::get(|| async { "ok" }))
@@ -180,6 +187,28 @@ mod tests {
             .body(axum::body::Body::empty())
             .unwrap();
         assert_eq!(app.oneshot(health).await.unwrap().status(), StatusCode::OK);
+    }
+    #[tokio::test]
+    async fn development_http_is_unavailable_to_remote_peers_even_with_spoofed_headers() {
+        let state = crate::state::test_state().await;
+        let app = axum::Router::new()
+            .route("/devices", axum::routing::get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn_with_state(state, protect));
+        for (ip, expected) in [
+            ("127.0.0.1", StatusCode::OK),
+            ("192.0.2.1", StatusCode::UPGRADE_REQUIRED),
+        ] {
+            let request = axum::http::Request::builder()
+                .uri("/devices")
+                .header("x-forwarded-proto", "https")
+                .extension(ConnectInfo(SocketAddr::new(ip.parse().unwrap(), 1234)))
+                .body(axum::body::Body::empty())
+                .unwrap();
+            assert_eq!(
+                app.clone().oneshot(request).await.unwrap().status(),
+                expected
+            );
+        }
     }
     #[test]
     fn login_abuse_is_bounded_without_blocking_control_or_other_clients() {

@@ -56,7 +56,7 @@ async fn handle_socket(
 ) {
     let (mut sender, mut receiver) = socket.split();
 
-    let admission = state.quic_router.admission.lock().await;
+    let lifecycle = state.lifecycle.read().await;
     // An HTTP upgrade can finish after DELETE. Recheck under the same gate as
     // deletion before recreating any in-memory state.
     let exists =
@@ -69,6 +69,7 @@ async fn handle_socket(
         return;
     }
 
+    let admission = state.quic_router.admission.lock().await;
     // Register device as connected
     state
         .sessions
@@ -78,13 +79,17 @@ async fn handle_socket(
         .device_access(&device_id)
         .expect("registered device has access");
     drop(admission);
+    drop(lifecycle);
     info!(device_id = %device_id, "device connected");
 
     // Update last_seen
-    let _ = sqlx::query("UPDATE devices SET last_seen = datetime('now') WHERE id = ?")
-        .bind(&device_id)
-        .execute(&state.db.pool)
-        .await;
+    let update =
+        sqlx::query("UPDATE devices SET last_seen = datetime('now') WHERE id = ?").bind(&device_id);
+    tokio::select! {
+        biased;
+        _ = access.cancelled() => return,
+        _ = tokio::time::timeout(std::time::Duration::from_secs(5), update.execute(&state.db.pool)) => {},
+    }
 
     // Process incoming messages from the daemon
     loop {
@@ -107,8 +112,15 @@ async fn handle_socket(
                 debug!(device_id = %device_id, "WebSocket closed by client");
                 break;
             }
-            Ok(Message::Ping(data)) if sender.send(Message::Pong(data.clone())).await.is_err() => {
-                break;
+            Ok(Message::Ping(data)) => {
+                let sent = tokio::select! {
+                    biased;
+                    _ = access.cancelled() => break,
+                    sent = tokio::time::timeout(std::time::Duration::from_secs(5), sender.send(Message::Pong(data))) => sent,
+                };
+                if !matches!(sent, Ok(Ok(()))) {
+                    break;
+                }
             }
             Err(e) => {
                 debug!(device_id = %device_id, error = %e, "WebSocket error");

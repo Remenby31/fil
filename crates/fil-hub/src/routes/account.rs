@@ -6,9 +6,10 @@ use crate::auth::AuthUser;
 use crate::state::AppState;
 
 pub async fn delete_account(auth: AuthUser, State(state): State<AppState>) -> StatusCode {
-    let _admission = state.quic_router.admission.lock().await;
+    let _lifecycle = state.lifecycle.write().await;
     match delete_account_data(&state, &auth.user_id).await {
         Ok(true) => {
+            let _admission = state.quic_router.admission.lock().await;
             state.tickets.revoke_user(&auth.user_id);
             for device in state.sessions.get_user_sessions(&auth.user_id) {
                 for session_id in state

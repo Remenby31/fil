@@ -50,6 +50,15 @@ every restart; announce the required app update before its fixed end date.
 Keep `JWT_SECRET` unchanged across deployment to preserve login. New native
 clients and daemon/proxy builds reject remote HTTP; local loopback tests remain
 supported. The rate limiter applies to requests/upgrades, never terminal frames.
+Native HTTP loopback is available only in Debug Simulator builds, not releases.
+Bare development hubs reject non-loopback peers even if forwarding headers are
+forged. Container deployments must use the explicitly configured HTTPS proxy.
+
+On a binary-only Mac daemon upgrade, startup repairs the old
+`/tmp/fil-daemon.log` permissions before opening hub connections. Re-pairing is
+not required. Operators can also move the existing LaunchAgent's stdout/stderr
+destinations into the private Fil configuration directory when restarting the
+daemon; retain the label, executable and account pairing.
 
 Verification commands: `cargo test --workspace --locked`, strict Clippy,
 `python3 scripts/smoke-test.py --ws-data`, `python3 scripts/security-smoke.py`,
