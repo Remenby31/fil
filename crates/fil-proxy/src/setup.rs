@@ -23,6 +23,7 @@ pub async fn run_setup(hub_url: Option<String>) -> Result<()> {
         config.quic_host = format!("quic.{host}");
     }
 
+    fil_protocol::tls::hub_url(&config.hub_url).map_err(anyhow::Error::msg)?;
     // Step 1: Authenticate
     println!("  \x1b[2m[1/3]\x1b[0m Authenticating...");
 
@@ -37,7 +38,9 @@ pub async fn run_setup(hub_url: Option<String>) -> Result<()> {
     let hostname = gethostname::gethostname().to_string_lossy().to_string();
     config.device_name = hostname.clone();
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
     let resp = client
         .post(format!("{}/devices", config.hub_url))
         .header("Authorization", format!("Bearer {}", config.token))
@@ -99,6 +102,14 @@ fn launch_agent_path() -> std::path::PathBuf {
 
 fn install_launch_agent() -> Result<()> {
     let plist_path = launch_agent_path();
+    let log_path = DaemonConfig::config_dir().join("daemon.log");
+    fil_protocol::private_fs::directory(&DaemonConfig::config_dir())?;
+    fil_protocol::private_fs::open(&log_path)?;
+    let escaped_log_path = log_path
+        .to_string_lossy()
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
 
     let plist = r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -119,7 +130,7 @@ fn install_launch_agent() -> Result<()> {
     <key>StandardOutPath</key>
     <string>/tmp/fil-daemon.log</string>
 </dict>
-</plist>"#;
+</plist>"#.replace("/tmp/fil-daemon.log", &escaped_log_path);
 
     if let Some(parent) = plist_path.parent() {
         std::fs::create_dir_all(parent)?;

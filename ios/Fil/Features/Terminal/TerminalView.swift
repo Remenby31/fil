@@ -1,3 +1,4 @@
+import ActivityKit
 import Combine
 import ComposableArchitecture
 import SwiftUI
@@ -24,6 +25,8 @@ struct TerminalSearchCommand: Equatable {
 struct TerminalSessionView: View {
     @Bindable var store: StoreOf<TerminalFeature>
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let presentation: TerminalPresentation
 
     @State private var currentFontSize: CGFloat = 14
@@ -31,6 +34,9 @@ struct TerminalSessionView: View {
     @State private var isSearching = false
     @State private var searchText = ""
     @State private var searchCommand: TerminalSearchCommand?
+    @State private var isReadingHistory = false
+    @State private var scrollToLatestRequest = 0
+    @FocusState private var isSearchFocused: Bool
 
     init(
         store: StoreOf<TerminalFeature>,
@@ -46,17 +52,17 @@ struct TerminalSessionView: View {
 
             VStack(spacing: 0) {
                 topBar
+                if store.showDisconnectedAlert {
+                    disconnectedOverlay
+                }
                 if isSearching {
                     searchBar
-                        .transition(.move(edge: .top).combined(with: .opacity))
+                        .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
                 }
                 terminalArea
             }
-
-            if store.showDisconnectedAlert {
-                disconnectedOverlay
-            }
         }
+        .environment(\.colorScheme, .dark)
         .gesture(
             MagnifyGesture()
                 .onChanged { value in
@@ -83,24 +89,36 @@ struct TerminalSessionView: View {
                 store.send(.dismissLiveActivityUnavailableAlert)
             }
         } message: {
-            Text("Allow Live Activities in Fil settings and in iOS Settings, then try again.")
+            if !FilActivityPreferences.current.isEnabled || !ActivityAuthorizationInfo().areActivitiesEnabled {
+                Text("Allow Live Activities in Fil settings and in iOS Settings, then try again.")
+            } else {
+                Text("Following could not start. Try again; iOS may have reached its Live Activity limit.")
+            }
         }
     }
 
     // MARK: - Top Bar
 
     private var topBar: some View {
-        ZStack {
-            terminalIdentity
-                .padding(.horizontal, store.isFollowing ? 154 : 112)
-
-            HStack(spacing: 8) {
-                closeButton
-
-                Spacer(minLength: 0)
-
-                searchButton
-                followButton
+        Group {
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(spacing: 6) {
+                    HStack {
+                        closeButton
+                        Spacer()
+                        searchButton
+                        followButton
+                    }
+                    terminalIdentity
+                }
+            } else {
+                HStack(spacing: 8) {
+                    closeButton
+                    terminalIdentity
+                        .frame(maxWidth: .infinity)
+                    searchButton
+                    followButton
+                }
             }
         }
         .padding(.horizontal, 8)
@@ -113,11 +131,7 @@ struct TerminalSessionView: View {
 
     private var closeButton: some View {
         Button {
-            if presentation == .embedded {
-                store.send(.dismiss)
-            } else {
-                dismiss()
-            }
+            closeTerminal()
         } label: {
             Image(systemName: "chevron.down")
                 .font(.system(size: 14, weight: .semibold))
@@ -127,14 +141,16 @@ struct TerminalSessionView: View {
         }
         .buttonStyle(.plain)
         .modifier(GlassCircleControl())
-        .accessibilityLabel("Close terminal")
+        .accessibilityLabel("Return to terminals")
+        .accessibilityHint("Leaves this view without closing the remote shell")
     }
 
     private var searchButton: some View {
         Button {
-            withAnimation(.easeOut(duration: 0.18)) {
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) {
                 isSearching.toggle()
             }
+            isSearchFocused = isSearching
             if !isSearching {
                 searchCommand = .init(term: "", direction: .clear)
                 searchText = ""
@@ -161,7 +177,7 @@ struct TerminalSessionView: View {
                             store.send(.switchSession(context.id))
                         } label: {
                             Label(
-                                "\(context.session.projectName) · \(context.session.processName)",
+                                "\(context.machineName) · \(context.session.projectName) · \(context.session.processName)",
                                 systemImage: context.id == store.session.id ? "checkmark" : "terminal"
                             )
                         }
@@ -194,7 +210,7 @@ struct TerminalSessionView: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(
-            "\(store.session.projectName), \(store.session.detail), \(store.connectionState.accessibilityDescription)"
+            "\(store.machineName), \(store.session.projectName), \(store.session.detail), \(store.connectionState.accessibilityDescription)"
         )
     }
 
@@ -211,7 +227,7 @@ struct TerminalSessionView: View {
                 Text(store.session.projectName)
                     .font(.body.weight(.semibold))
                     .foregroundStyle(.primary)
-                    .lineLimit(1)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
 
                 if showsDisclosure {
                     Image(systemName: "chevron.down")
@@ -220,12 +236,15 @@ struct TerminalSessionView: View {
                 }
             }
 
-            if !isKeyboardVisible {
-                Text("\(store.session.processName) · \(store.machineName)")
+            Text(store.machineName)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+
+            if !store.isConnected && !store.showDisconnectedAlert {
+                Text(connectionStatusLabel)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+                    .foregroundStyle(FilTheme.warning)
             }
         }
         .frame(maxWidth: .infinity)
@@ -239,20 +258,13 @@ struct TerminalSessionView: View {
                 if store.isFollowRequestInFlight {
                     ProgressView()
                         .controlSize(.small)
-                } else if store.isFollowing {
-                    HStack(spacing: 5) {
-                        Image(systemName: "livephoto")
-                        Text("Following")
-                    }
-                    .font(.caption.weight(.semibold))
                 } else {
-                    Image(systemName: "livephoto")
+                    Image(systemName: store.isFollowing ? "checkmark.circle.fill" : "livephoto")
                         .font(.system(size: 15, weight: .medium))
                 }
             }
             .foregroundStyle(store.isFollowing ? FilTheme.filGreen : Color(.secondaryLabel))
             .frame(minWidth: 44, minHeight: 44)
-            .padding(.horizontal, store.isFollowing ? 8 : 0)
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
@@ -276,13 +288,15 @@ struct TerminalSessionView: View {
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .submitLabel(.search)
+                .focused($isSearchFocused)
+                .onAppear { isSearchFocused = true }
                 .onSubmit { performSearch(.next) }
 
             Button {
                 performSearch(.previous)
             } label: {
                 Image(systemName: "chevron.up")
-                    .frame(width: 36, height: 36)
+                    .frame(width: 44, height: 44)
             }
             .buttonStyle(.plain)
             .disabled(searchText.isEmpty)
@@ -292,7 +306,7 @@ struct TerminalSessionView: View {
                 performSearch(.next)
             } label: {
                 Image(systemName: "chevron.down")
-                    .frame(width: 36, height: 36)
+                    .frame(width: 44, height: 44)
             }
             .buttonStyle(.plain)
             .disabled(searchText.isEmpty)
@@ -348,61 +362,88 @@ struct TerminalSessionView: View {
             sessionId: store.session.id,
             fontSize: store.fontSize,
             onInput: { data in
-                store.send(.inputSent(data))
+                if store.isConnected && !isSearching {
+                    store.send(.inputSent(data))
+                }
             },
             onSizeChanged: { cols, rows in
                 store.send(.terminalSizeChanged(cols: cols, rows: rows))
             },
-            searchCommand: searchCommand
+            searchCommand: searchCommand,
+            scrollToLatestRequest: scrollToLatestRequest,
+            onReadingHistoryChanged: { isReadingHistory = $0 }
         )
         .id(store.session.id)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(.horizontal, 8)
         .padding(.top, 4)
+        .overlay(alignment: .bottomTrailing) {
+            if isReadingHistory && !isSearching {
+                Button {
+                    scrollToLatestRequest += 1
+                } label: {
+                    Label("Back to live output", systemImage: "arrow.down.to.line")
+                        .font(.callout.weight(.semibold))
+                        .padding(.horizontal, 14)
+                        .frame(minHeight: 44)
+                        .background(.regularMaterial, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .padding(12)
+            }
+        }
     }
 
     // MARK: - Disconnected Overlay
 
     private var disconnectedOverlay: some View {
-        ZStack {
-            Color.black.opacity(0.6).ignoresSafeArea()
-
-            VStack(spacing: 20) {
-                Image(systemName: "wifi.exclamationmark")
-                    .font(.system(size: 32))
-                    .foregroundStyle(FilTheme.error)
-
-                VStack(spacing: 6) {
-                    Text("Connection lost")
-                        .font(.headline)
-                        .foregroundStyle(FilTheme.terminalForeground)
-
-                    // This used to say "Trying to reconnect..." unconditionally
-                    // while nothing was retrying. The overlay is now only shown
-                    // for `.unreachable`, i.e. once the retries have stopped.
-                    Text("Your session is still running. Tap to reconnect.")
-                        .font(.body)
-                        .multilineTextAlignment(.center)
-                        .foregroundStyle(FilTheme.terminalForeground.opacity(0.62))
-                }
-
-                Button {
-                    store.send(.reconnectTapped)
-                } label: {
-                    Text("Reconnect")
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(FilTheme.terminalBackground)
-                        .padding(.horizontal, 28)
-                        .frame(minHeight: 44)
-                        .background(FilTheme.filGreen)
-                        .clipShape(Capsule())
-                }
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Connection lost", systemImage: "wifi.exclamationmark")
+                .font(.headline)
+            Text("The remote session state is unknown. Reconnect to check.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) { recoveryActions }
+                VStack(alignment: .leading, spacing: 4) { recoveryActions }
             }
-            .padding(28)
-            .background(FilTheme.terminalSurface)
-            .clipShape(RoundedRectangle(cornerRadius: 20))
         }
-        .transition(.opacity)
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .foregroundStyle(FilTheme.terminalForeground)
+        .background(FilTheme.terminalSurface)
+        .accessibilityElement(children: .contain)
+    }
+
+    @ViewBuilder
+    private var recoveryActions: some View {
+        Button("Reconnect") { store.send(.reconnectTapped) }
+            .buttonStyle(.borderedProminent)
+            .tint(FilTheme.filGreen)
+            .foregroundStyle(FilTheme.terminalBackground)
+            .frame(minHeight: 44)
+        Button("Return to terminals") { closeTerminal() }
+            .buttonStyle(.bordered)
+            .frame(minHeight: 44)
+    }
+
+    private func closeTerminal() {
+        if presentation == .embedded {
+            store.send(.dismiss)
+        } else {
+            dismiss()
+        }
+    }
+
+    private var connectionStatusLabel: LocalizedStringKey {
+        switch store.connectionState {
+        case .connected: "Connected"
+        case .connecting: "Connecting…"
+        case .reconnecting: "Reconnecting…"
+        case .suspended: "Updates paused"
+        case .unreachable: "Connection lost"
+        }
     }
 
     private var liveActivityAlertBinding: Binding<Bool> {
@@ -419,7 +460,7 @@ struct TerminalSessionView: View {
     private func updateKeyboardVisibility(_ isVisible: Bool, notification: Notification) {
         let duration = notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey]
             as? Double ?? 0.25
-        withAnimation(.easeOut(duration: duration)) {
+        withAnimation(reduceMotion ? nil : .easeOut(duration: duration)) {
             isKeyboardVisible = isVisible
         }
     }
@@ -438,10 +479,14 @@ struct SwiftTermWrapper: UIViewRepresentable {
     var onInput: ((Data) -> Void)?
     var onSizeChanged: ((Int, Int) -> Void)?
     var searchCommand: TerminalSearchCommand?
+    var scrollToLatestRequest = 0
+    var onReadingHistoryChanged: ((Bool) -> Void)?
 
     func makeUIView(context: Context) -> SwiftTerm.TerminalView {
         let font = UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
-        let tv = SwiftTerm.TerminalView(frame: .zero, font: font)
+        let tv = FilTerminalView(frame: .zero, font: font)
+        tv.onReadingHistoryChanged = onReadingHistoryChanged
+        tv.overrideUserInterfaceStyle = .dark
         tv.backgroundColor = UIColor(FilTheme.terminalBackground)
         tv.nativeForegroundColor = UIColor(FilTheme.terminalForeground)
         tv.nativeBackgroundColor = UIColor(FilTheme.terminalBackground)
@@ -461,6 +506,13 @@ struct SwiftTermWrapper: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: SwiftTerm.TerminalView, context: Context) {
+        if let terminal = uiView as? FilTerminalView {
+            terminal.onReadingHistoryChanged = onReadingHistoryChanged
+            if context.coordinator.lastScrollToLatestRequest != scrollToLatestRequest {
+                context.coordinator.lastScrollToLatestRequest = scrollToLatestRequest
+                terminal.scrollToLatest()
+            }
+        }
         context.coordinator.onInput = onInput
         context.coordinator.onSizeChanged = onSizeChanged
         context.coordinator.apply(searchCommand, to: uiView)
@@ -478,7 +530,13 @@ struct SwiftTermWrapper: UIViewRepresentable {
 
         if context.coordinator.appliedFontSize != fontSize {
             context.coordinator.appliedFontSize = fontSize
-            uiView.font = UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+            if let terminal = uiView as? FilTerminalView {
+                terminal.preservingViewport {
+                    terminal.font = UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+                }
+            } else {
+                uiView.font = UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+            }
         }
     }
 
@@ -499,6 +557,7 @@ struct SwiftTermWrapper: UIViewRepresentable {
         weak var terminalView: SwiftTerm.TerminalView?
         var outputRelay: TerminalOutputRelay?
         var appliedFontSize: CGFloat?
+        var lastScrollToLatestRequest = 0
         var onInput: ((Data) -> Void)?
         var onSizeChanged: ((Int, Int) -> Void)?
         private var pendingResize: DispatchWorkItem?
@@ -553,6 +612,151 @@ struct SwiftTermWrapper: UIViewRepresentable {
             case .clear:
                 terminalView.clearSearch()
             }
+        }
+    }
+}
+
+/// SwiftTerm 1.13 updates its scroller to the bottom on every output scroll.
+/// Keep the user's top visible row instead, without stopping UIKit's drag or
+/// deceleration. The dependency itself stays untouched.
+final class FilTerminalView: SwiftTerm.TerminalView {
+    private var viewportReady = false
+    var onReadingHistoryChanged: ((Bool) -> Void)?
+    private var protectingViewport = false
+    private var oldestLineIndex = 0
+    private var observedBuffer: SwiftTerm.Buffer?
+    private var bufferGeneration = 0
+    private var lastReportedReadingHistory = false
+    private var protectedSizeUpdates = 0
+
+    override init(frame: CGRect, font: UIFont?) {
+        super.init(frame: frame, font: font)
+        viewportReady = true
+    }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        viewportReady = true
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        viewportReady = true
+    }
+
+    private var rowHeight: CGFloat {
+        max(1, ceil(CTFontGetAscent(font) + CTFontGetDescent(font) + CTFontGetLeading(font)))
+    }
+
+    var isReadingHistory: Bool {
+        viewportReady && !getTerminal().isCurrentBufferAlternate
+            && contentSize.height - bounds.height - contentOffset.y > rowHeight
+    }
+
+    override var contentOffset: CGPoint {
+        get { super.contentOffset }
+        set {
+            // Do not set-and-restore: even a temporary snap cancels momentum.
+            guard !protectingViewport, protectedSizeUpdates == 0 else { return }
+            super.contentOffset = newValue
+            reportReadingPosition()
+        }
+    }
+
+    override func layoutSubviews() {
+        preservingViewport { super.layoutSubviews() }
+    }
+
+    override func bufferActivated(source: SwiftTerm.Terminal) {
+        bufferGeneration &+= 1
+        // Alternate screens are a different viewport, never old scrollback.
+        let wasProtecting = protectingViewport
+        protectingViewport = false
+        super.bufferActivated(source: source)
+        protectingViewport = wasProtecting
+    }
+
+    override func sizeChanged(source: SwiftTerm.Terminal) {
+        // SwiftTerm schedules another updateScroller on the next main turn
+        // after a font resize. Keep that deferred update from undoing the
+        // viewport restored synchronously below; still run its delegate and
+        // geometry updates normally.
+        let protect = viewportReady && (protectingViewport || isReadingHistory)
+        if protect { protectedSizeUpdates += 1 }
+        super.sizeChanged(source: source)
+        if protect {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.protectedSizeUpdates -= 1
+                self.reportReadingPosition()
+            }
+        }
+    }
+
+    func receiveOutput(_ bytes: ArraySlice<UInt8>) {
+        preservingViewport(outputByteCount: bytes.count) { feed(byteArray: bytes) }
+    }
+
+    func scrollToLatest() {
+        setContentOffset(CGPoint(x: 0, y: max(0, contentSize.height - bounds.height)), animated: false)
+        reportReadingPosition()
+    }
+
+    func preservingViewport(outputByteCount: Int = 0, _ update: () -> Void) {
+        guard viewportReady, !protectingViewport else { update(); return }
+        let terminal = getTerminal()
+        if observedBuffer !== terminal.buffer {
+            observedBuffer = terminal.buffer
+            oldestLineIndex = 0
+        }
+        let buffer = terminal.buffer
+        let generation = bufferGeneration
+        let preserve = isReadingHistory || (isDragging && !terminal.isCurrentBufferAlternate)
+        let height = rowHeight
+        let topRow = max(0, contentOffset.y / height)
+        let absoluteRow = CGFloat(oldestLineIndex) + topRow
+        let previousOffset = contentOffset
+        protectingViewport = preserve
+        update()
+        protectingViewport = false
+
+        // The public invariant-line API exposes which rows survived a full
+        // circular buffer. At most one row can be discarded per output byte.
+        // This keeps a retained line anchored when old history is evicted.
+        if observedBuffer !== terminal.buffer {
+            observedBuffer = terminal.buffer
+            oldestLineIndex = 0
+        }
+        if terminal.getScrollInvariantLine(row: oldestLineIndex) == nil {
+            if terminal.getScrollInvariantLine(row: 0) != nil {
+                oldestLineIndex = 0
+            } else if outputByteCount > 0 {
+                for _ in 0...outputByteCount {
+                    guard terminal.getScrollInvariantLine(row: oldestLineIndex) == nil else { break }
+                    oldestLineIndex += 1
+                }
+            }
+        }
+        if preserve, buffer === terminal.buffer, generation == bufferGeneration,
+           !terminal.isCurrentBufferAlternate {
+            let y = min(max(0, (absoluteRow - CGFloat(oldestLineIndex)) * rowHeight),
+                        max(0, contentSize.height - bounds.height))
+            let restored = CGPoint(x: previousOffset.x, y: y)
+            if super.contentOffset != restored { super.contentOffset = restored }
+            setNeedsDisplay()
+        }
+        reportReadingPosition()
+    }
+
+    private func reportReadingPosition() {
+        guard viewportReady else { return }
+        let reading = isReadingHistory
+        guard reading != lastReportedReadingHistory else { return }
+        lastReportedReadingHistory = reading
+        // Avoid publishing SwiftUI state in updateUIView/layoutSubviews.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.lastReportedReadingHistory == reading else { return }
+            self.onReadingHistoryChanged?(reading)
         }
     }
 }
@@ -620,7 +824,11 @@ final class TerminalOutputRelay: @unchecked Sendable {
 
         guard let terminalView, !data.isEmpty else { return }
         let bytes = [UInt8](data)
-        terminalView.feed(byteArray: bytes[...])
+        if let terminal = terminalView as? FilTerminalView {
+            terminal.receiveOutput(bytes[...])
+        } else {
+            terminalView.feed(byteArray: bytes[...])
+        }
     }
 
     private func withLock<T>(_ body: () -> T) -> T {
@@ -646,6 +854,7 @@ final class FilAccessoryView: UIInputView {
     init(terminalView: SwiftTerm.TerminalView) {
         self.terminalView = terminalView
         super.init(frame: CGRect(x: 0, y: 0, width: 0, height: 52), inputViewStyle: .keyboard)
+        overrideUserInterfaceStyle = .dark
         allowsSelfSizing = true
         autoresizingMask = [.flexibleWidth]
         backgroundColor = .clear
@@ -928,13 +1137,20 @@ final class FilAccessoryView: UIInputView {
     @objc private func scrollToBottom() {
         haptic()
         guard let terminalView else { return }
+        if let terminalView = terminalView as? FilTerminalView {
+            terminalView.scrollToLatest()
+            return
+        }
         let y = max(
             -terminalView.adjustedContentInset.top,
             terminalView.contentSize.height
                 - terminalView.bounds.height
                 + terminalView.adjustedContentInset.bottom
         )
-        terminalView.setContentOffset(CGPoint(x: terminalView.contentOffset.x, y: y), animated: true)
+        terminalView.setContentOffset(
+            CGPoint(x: terminalView.contentOffset.x, y: y),
+            animated: !UIAccessibility.isReduceMotionEnabled
+        )
     }
 
     // MARK: - Auto-Repeat

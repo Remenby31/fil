@@ -13,9 +13,11 @@ enum TokenStorage {
     }
 
     static func loadToken() -> String? {
+        #if DEBUG && targetEnvironment(simulator)
         if let envToken = ProcessInfo.processInfo.environment["FIL_AUTH_TOKEN"], !envToken.isEmpty {
             return envToken
         }
+        #endif
         return load(key: tokenKey)
     }
 
@@ -46,9 +48,11 @@ enum TokenStorage {
     }
 
     static func loadHubUrl() -> String {
+        #if DEBUG && targetEnvironment(simulator)
         if let envUrl = ProcessInfo.processInfo.environment["FIL_HUB_URL"], !envUrl.isEmpty {
             return envUrl
         }
+        #endif
         return load(key: hubUrlKey) ?? "https://fil.remenby.fr"
     }
 

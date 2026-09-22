@@ -10,7 +10,7 @@ Access your Mac terminal sessions from your iPhone. Fil is the invisible thread 
 Mac (Ghostty/kitty/any terminal)
   └── fil (PTY proxy) ──── WebSocket ────► Hub (VPS/Docker) ◄──── iOS App
                                             session registry
-                                            E2E encrypted routing
+                                            TLS-protected routing
 ```
 
 1. **Install on your Mac**: `brew install fil && fil setup`
@@ -24,7 +24,7 @@ Mac (Ghostty/kitty/any terminal)
 | `fil` daemon | Rust | PTY proxy, launched by your terminal instead of bash |
 | `fil-hub` | Rust | Central server — session registry, auth, WebSocket routing |
 | iOS app | Swift (SwiftUI + TCA) | Native terminal client with SwiftTerm |
-| `fil-protocol` | Rust + Protobuf | Shared protocol definitions + E2E crypto |
+| `fil-protocol` | Rust + Protobuf | Shared messages, certificate pinning, experimental Noise primitives |
 
 ## Features
 
@@ -32,7 +32,7 @@ Mac (Ghostty/kitty/any terminal)
 - **Multi-machine** — all your Macs, one hub
 - **Smart notifications** — build finished, prompt waiting, errors
 - **Dynamic Island** — long-running processes on your lock screen
-- **E2E encrypted** — Noise Protocol (XX), ChaCha20-Poly1305
+- **Encrypted in transit** — authenticated QUIC with certificate pinning, with HTTPS/WebSocket fallback. The trusted hub relays plaintext and keeps a bounded in-memory replay buffer; this is not end-to-end encryption.
 - **Self-hostable** — one Docker command, your data stays yours
 
 ## Quick start
@@ -48,13 +48,18 @@ fil setup
 ### Hub (self-hosted)
 
 ```bash
-docker run -d -p 3100:3100 \
-  -e JWT_SECRET=your-secret \
+docker run -d -p 127.0.0.1:3100:3100 -p 16433:16433/udp \
+  -e JWT_SECRET -e PUBLIC_URL -e FIL_TRUSTED_PROXY_IPS \
   -e GITHUB_CLIENT_ID=xxx \
   -e GITHUB_CLIENT_SECRET=xxx \
   -v fil-data:/data \
   fil/hub
 ```
+
+Set `JWT_SECRET` to a persistent random secret of at least 32 bytes,
+`PUBLIC_URL` to your HTTPS origin, and `FIL_TRUSTED_PROXY_IPS` to the exact
+immediate proxy address as seen inside the container. Terminate HTTPS at that
+proxy and keep the HTTP origin private. See [security and migration settings](docs/security-hardening.md).
 
 ActivityKit updates continue locally without APNs. To keep Live Activities current while the app is suspended, mount an Apple APNs `.p8` provider key as a Docker secret and configure:
 
@@ -93,7 +98,7 @@ cd ios && xcodegen generate && open Fil.xcodeproj
 ├── crates/
 │   ├── fil-daemon/     # PTY proxy binary
 │   ├── fil-hub/        # Central server
-│   └── fil-protocol/   # Protobuf + E2E crypto
+│   └── fil-protocol/   # Protobuf + transport verification
 ├── ios/                # SwiftUI iOS app
 │   ├── Fil/            # App source
 │   ├── FilWidgets/     # Widget extension

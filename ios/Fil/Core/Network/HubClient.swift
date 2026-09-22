@@ -40,13 +40,16 @@ actor HubClient {
     /// account JWT is deliberately not used here: it lives 30 days, so putting
     /// it on the data plane would turn a leaked session id into a leaked
     /// account.
-    func sessionTicket(sessionId: String, token: String) async throws -> String {
+    func sessionTicket(sessionId: String, token: String) async throws -> SessionTicketResponse {
+        // The certificate pin is trustworthy only when delivered over HTTPS.
+        // Never send the account credential to an HTTP ticket endpoint.
+        guard baseURL.scheme?.lowercased() == "https" else { throw HubError.invalidURL }
         let response: SessionTicketResponse = try await post(
             "/sessions/\(sessionId)/ticket",
             body: EmptyBody(),
             token: token
         )
-        return response.ticket
+        return response
     }
 
     // MARK: - Account
@@ -127,8 +130,13 @@ actor HubClient {
 
 // MARK: - Request/Response Types
 
-struct SessionTicketResponse: Codable {
+struct SessionTicketResponse: Codable, Sendable {
     let ticket: String
+    let quicCertificate: String
+    enum CodingKeys: String, CodingKey {
+        case ticket
+        case quicCertificate = "quic_certificate"
+    }
 }
 
 struct EmptyBody: Codable {}

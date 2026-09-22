@@ -49,8 +49,7 @@ struct FilWidgetEntry: TimelineEntry {
 }
 
 private enum FilWidgetColors {
-    static let accent = Color(red: 0, green: 0.83, blue: 0.67)
-    static let background = Color(red: 0.039, green: 0.039, blue: 0.059)
+    static let background = Color(uiColor: .secondarySystemBackground)
 }
 
 private struct FilWidgetMark: View {
@@ -59,7 +58,7 @@ private struct FilWidgetMark: View {
             Text("fil")
                 .foregroundStyle(.primary)
             Text(".sh")
-                .foregroundStyle(FilWidgetColors.accent)
+                .foregroundStyle(.primary)
         }
         .font(.headline.weight(.medium))
         .accessibilityElement(children: .combine)
@@ -69,6 +68,8 @@ private struct FilWidgetMark: View {
 
 struct FilWidgetSmall: View {
     let entry: FilWidgetEntry
+    let privacy: FilActivityPrivacy
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -81,19 +82,17 @@ struct FilWidgetSmall: View {
                     .font(.system(.largeTitle, design: .rounded, weight: .semibold))
                     .monospacedDigit()
 
-                Text(
-                    snapshot.activeSessions.count == 1
-                        ? String(localized: "active terminal")
-                        : String(localized: "active terminals")
-                )
+                Text("Terminals at last sync")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                if let session = snapshot.activeSessions.first {
+                if privacy != .private_, !dynamicTypeSize.isAccessibilitySize,
+                   let session = snapshot.activeSessions.first {
                     Text(session.projectName)
                         .font(.caption.weight(.medium))
                         .lineLimit(1)
                 }
+                FilWidgetSyncTime(date: snapshot.updatedAt)
             } else {
                 Text("Open Fil")
                     .font(.headline)
@@ -111,45 +110,50 @@ struct FilWidgetSmall: View {
 
 struct FilWidgetMedium: View {
     let entry: FilWidgetEntry
+    let privacy: FilActivityPrivacy
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 FilWidgetMark()
                 Spacer()
-                if let snapshot = entry.snapshot {
-                    Text("\(snapshot.connectedMachineCount) connected")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
             }
 
             if let snapshot = entry.snapshot, !snapshot.activeSessions.isEmpty {
-                ForEach(Array(snapshot.activeSessions.prefix(3))) { session in
-                    HStack(spacing: 8) {
-                        Circle()
-                            .fill(FilWidgetColors.accent)
-                            .frame(width: 6, height: 6)
-
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(session.projectName)
-                                .font(.caption.weight(.semibold))
-                                .lineLimit(1)
-                            Text("\(session.processName) · \(session.machineName)")
-                                .font(.caption2)
+                if privacy == .private_ {
+                    Text("\(snapshot.activeSessions.count) terminals at last sync")
+                        .font(.headline)
+                } else {
+                    ForEach(Array(snapshot.activeSessions.prefix(dynamicTypeSize.isAccessibilitySize ? 1 : 2))) { session in
+                        HStack(spacing: 8) {
+                            Image(systemName: "terminal")
                                 .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
+                                .accessibilityHidden(true)
 
-                        Spacer(minLength: 4)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(session.projectName)
+                                    .font(.caption.weight(.semibold))
+                                    .lineLimit(1)
+                                Text(privacy == .detailed ? "\(session.processName) · \(session.machineName)" : session.machineName)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+
+                            Spacer(minLength: 4)
+                        }
+                        .accessibilityElement(children: .combine)
                     }
                 }
             } else {
-                ContentUnavailableView(
-                    "No Active Terminals",
-                    systemImage: "terminal",
-                    description: Text("Open Fil to refresh")
-                )
+                Text(entry.snapshot == nil
+                     ? LocalizedStringKey("Open Fil to refresh")
+                     : LocalizedStringKey("No terminals at last sync"))
+                    .font(.subheadline)
+            }
+            if let snapshot = entry.snapshot {
+                FilWidgetSyncTime(date: snapshot.updatedAt)
             }
 
             Spacer(minLength: 0)
@@ -169,7 +173,7 @@ struct FilWidget: Widget {
             FilWidgetEntryView(entry: entry)
         }
         .configurationDisplayName("Fil Terminals")
-        .description("See the terminal sessions that are active right now.")
+        .description("See your last synced terminals. Open Fil for current status.")
         .supportedFamilies([.systemSmall, .systemMedium])
     }
 }
@@ -177,14 +181,31 @@ struct FilWidget: Widget {
 struct FilWidgetEntryView: View {
     @Environment(\.widgetFamily) private var family
     let entry: FilWidgetEntry
+    @AppStorage(FilSharedStore.activityPrivacyKey, store: FilSharedStore.activityPrivacyDefaults)
+    private var privacyRaw = FilActivityPrivacy.private_.rawValue
+
+    private var privacy: FilActivityPrivacy {
+        FilActivityPrivacy(rawValue: privacyRaw) ?? .private_
+    }
 
     var body: some View {
         switch family {
         case .systemMedium:
-            FilWidgetMedium(entry: entry)
+            FilWidgetMedium(entry: entry, privacy: privacy)
         default:
-            FilWidgetSmall(entry: entry)
+            FilWidgetSmall(entry: entry, privacy: privacy)
         }
+    }
+}
+
+private struct FilWidgetSyncTime: View {
+    let date: Date
+
+    var body: some View {
+        (Text("Last sync") + Text(" · ") + Text(date, style: .relative))
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
     }
 }
 

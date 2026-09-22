@@ -1,9 +1,7 @@
-use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonConfig {
     #[serde(default = "default_hub_url")]
     pub hub_url: String,
@@ -27,8 +25,24 @@ fn default_quic_port() -> u16 {
     16433
 }
 
+impl Default for DaemonConfig {
+    fn default() -> Self {
+        Self {
+            hub_url: default_hub_url(),
+            quic_port: default_quic_port(),
+            quic_host: String::new(),
+            token: String::new(),
+            device_id: String::new(),
+            device_name: String::new(),
+        }
+    }
+}
+
 impl DaemonConfig {
     pub fn config_dir() -> PathBuf {
+        if let Some(dir) = std::env::var_os("FIL_CONFIG_DIR") {
+            return PathBuf::from(dir);
+        }
         dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("~/.config"))
             .join("fil")
@@ -48,16 +62,6 @@ impl DaemonConfig {
         }
     }
 
-    pub fn save(&self) -> Result<()> {
-        let dir = Self::config_dir();
-        std::fs::create_dir_all(&dir)?;
-        let content = toml::to_string_pretty(self)?;
-        let path = Self::config_path();
-        std::fs::write(&path, content)?;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-        Ok(())
-    }
-
     pub fn is_configured(&self) -> bool {
         !self.token.is_empty() && !self.device_id.is_empty()
     }
@@ -67,13 +71,41 @@ impl DaemonConfig {
             return self.quic_host.clone();
         }
         // Derive from hub_url: fil.remenby.fr → quic.fil.remenby.fr
-        let host = self
-            .hub_url
-            .trim_start_matches("https://")
-            .trim_start_matches("http://")
-            .split(':')
-            .next()
+        let url = url::Url::parse(&self.hub_url).ok();
+        let host = url
+            .as_ref()
+            .and_then(url::Url::host_str)
             .unwrap_or("localhost");
-        format!("quic.{host}")
+        if host == "localhost" || host.parse::<std::net::IpAddr>().is_ok() || host.starts_with('[')
+        {
+            host.trim_matches(['[', ']']).to_string()
+        } else {
+            format!("quic.{host}")
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn defaults_match_empty_config_and_local_hosts_are_not_prefixed() {
+        let empty: DaemonConfig = toml::from_str("").unwrap();
+        assert_eq!(DaemonConfig::default().quic_port, empty.quic_port);
+        assert_eq!(DaemonConfig::default().hub_url, empty.hub_url);
+        for (hub, host) in [
+            ("http://localhost:3100", "localhost"),
+            ("http://127.0.0.1:3100", "127.0.0.1"),
+            ("https://fil.example/", "quic.fil.example"),
+        ] {
+            assert_eq!(
+                DaemonConfig {
+                    hub_url: hub.into(),
+                    ..Default::default()
+                }
+                .effective_quic_host(),
+                host
+            );
+        }
     }
 }

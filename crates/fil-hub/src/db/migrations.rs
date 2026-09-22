@@ -33,10 +33,7 @@ pub async fn run(pool: &SqlitePool) -> Result<()> {
     .await?;
     debug!("table 'devices' ready");
 
-    // Drop and recreate oauth_states to add cli_callback column
-    sqlx::query("DROP TABLE IF EXISTS oauth_states")
-        .execute(pool)
-        .await?;
+    // Migrations must preserve logins that are in flight during a restart.
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS oauth_states (
             state TEXT PRIMARY KEY,
@@ -48,6 +45,16 @@ pub async fn run(pool: &SqlitePool) -> Result<()> {
     .execute(pool)
     .await?;
     debug!("table 'oauth_states' ready");
+    let has_callback: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('oauth_states') WHERE name = 'cli_callback'",
+    )
+    .fetch_one(pool)
+    .await?;
+    if has_callback == 0 {
+        sqlx::query("ALTER TABLE oauth_states ADD COLUMN cli_callback TEXT DEFAULT ''")
+            .execute(pool)
+            .await?;
+    }
 
     // Link table: multiple auth providers → same user
     sqlx::query(
@@ -99,4 +106,69 @@ pub async fn run(pool: &SqlitePool) -> Result<()> {
     debug!("table 'live_activities' ready");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn restart_preserves_pending_oauth_states() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        run(&pool).await.unwrap();
+        sqlx::query("INSERT INTO oauth_states (state, provider) VALUES ('pending', 'github')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        run(&pool).await.unwrap();
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM oauth_states WHERE state = 'pending'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn legacy_oauth_state_table_is_upgraded_without_losing_state_or_timestamp() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "CREATE TABLE oauth_states (
+            state TEXT PRIMARY KEY, provider TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        ); INSERT INTO oauth_states (state, provider, created_at)
+           VALUES ('legacy-pending', 'github', '2026-09-19 10:00:00');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        run(&pool).await.unwrap();
+        run(&pool).await.unwrap();
+        let row: (String, String, String) = sqlx::query_as(
+            "SELECT provider, cli_callback, created_at FROM oauth_states WHERE state = 'legacy-pending'",
+        ).fetch_one(&pool).await.unwrap();
+        assert_eq!(
+            row,
+            ("github".into(), "".into(), "2026-09-19 10:00:00".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn migration_database_errors_are_propagated() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        pool.close().await;
+        assert!(run(&pool).await.is_err());
+    }
 }

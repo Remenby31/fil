@@ -6,6 +6,7 @@ use futures_util::{SinkExt, StreamExt};
 use prost::Message as ProstMessage;
 use std::sync::Arc;
 use tokio::sync::mpsc::{self, error::TrySendError};
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{info, warn};
 use url::Url;
@@ -111,14 +112,18 @@ async fn connect_ws(
     >,
 )> {
     let ws_url = build_ws_url(&config.hub_url, &config.device_id)?;
-    let (ws_stream, _) = connect_async(ws_url.as_str())
+    let mut request = ws_url.as_str().into_client_request()?;
+    request
+        .headers_mut()
+        .insert("Authorization", format!("Bearer {}", config.token).parse()?);
+    let (ws_stream, _) = connect_async(request)
         .await
         .context("WebSocket connect failed")?;
     Ok(ws_stream.split())
 }
 
 fn build_ws_url(hub_url: &str, device_id: &str) -> Result<Url> {
-    let mut url = Url::parse(hub_url)?;
+    let mut url = fil_protocol::tls::hub_url(hub_url).map_err(anyhow::Error::msg)?;
     match url.scheme() {
         "http" => url.set_scheme("ws").ok(),
         "https" => url.set_scheme("wss").ok(),
@@ -126,8 +131,8 @@ fn build_ws_url(hub_url: &str, device_id: &str) -> Result<Url> {
     };
     url.set_path("/ws");
     url.query_pairs_mut()
-        .append_pair("device_id", device_id)
-        .append_pair("device_token", device_id);
+        .clear()
+        .append_pair("device_id", device_id);
     Ok(url)
 }
 

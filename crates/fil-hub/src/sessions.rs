@@ -1,8 +1,9 @@
 use chrono::{DateTime, Utc};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use tokio::sync::broadcast;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct SessionInfo {
@@ -44,6 +45,10 @@ pub struct UserSessionUpdate {
 #[derive(Clone)]
 pub struct SessionRegistry {
     devices: Arc<RwLock<HashMap<String, DeviceState>>>,
+    // Globally reserve IDs to authenticated devices, including offline/omitted
+    // sessions. Always lock devices before owners; claims and mutations are atomic.
+    session_owners: Arc<RwLock<HashMap<String, String>>>,
+    device_access: Arc<RwLock<HashMap<String, CancellationToken>>>,
     updates: broadcast::Sender<UserSessionUpdate>,
 }
 
@@ -52,6 +57,8 @@ impl SessionRegistry {
         let (updates, _) = broadcast::channel(256);
         Self {
             devices: Arc::new(RwLock::new(HashMap::new())),
+            session_owners: Arc::new(RwLock::new(HashMap::new())),
+            device_access: Arc::new(RwLock::new(HashMap::new())),
             updates,
         }
     }
@@ -63,6 +70,11 @@ impl SessionRegistry {
     pub fn register_device(&self, device_id: &str, user_id: &str, device_name: &str) {
         {
             let mut devices = self.devices.write().unwrap();
+            self.device_access
+                .write()
+                .unwrap()
+                .entry(device_id.to_string())
+                .or_default();
             let device = devices
                 .entry(device_id.to_string())
                 .or_insert_with(|| DeviceState {
@@ -81,12 +93,17 @@ impl SessionRegistry {
         self.publish(user_id);
     }
 
-    pub fn add_session(&self, device_id: &str, session: SessionInfo) {
+    pub fn add_session(&self, device_id: &str, mut session: SessionInfo) {
         let user_id = {
             let mut devices = self.devices.write().unwrap();
             let Some(device) = devices.get_mut(device_id) else {
                 return;
             };
+            let mut owners = self.session_owners.write().unwrap();
+            if !claim_session(&mut owners, device_id, &session.session_id) {
+                return;
+            }
+            session.device_id = device_id.to_string();
             if let Some(existing) = device
                 .sessions
                 .iter_mut()
@@ -101,33 +118,57 @@ impl SessionRegistry {
         self.publish(&user_id);
     }
 
-    pub fn remove_session(&self, device_id: &str, session_id: &str) {
+    /// Release only this device's reservation, even if a heartbeat omitted it.
+    /// The result authorizes the caller to clean up the global data route.
+    pub fn remove_session(&self, device_id: &str, session_id: &str) -> bool {
         let user_id = {
             let mut devices = self.devices.write().unwrap();
             let Some(device) = devices.get_mut(device_id) else {
-                return;
+                return false;
             };
-            let previous_len = device.sessions.len();
+            let mut owners = self.session_owners.write().unwrap();
+            if owners
+                .get(session_id)
+                .is_none_or(|owner| owner != device_id)
+            {
+                return false;
+            }
+            owners.remove(session_id);
             device
                 .sessions
                 .retain(|session| session.session_id != session_id);
-            if previous_len == device.sessions.len() {
-                return;
-            }
             device.user_id.clone()
         };
         self.publish(&user_id);
+        true
     }
 
-    pub fn update_heartbeat(&self, device_id: &str, mut sessions: Vec<SessionInfo>) {
-        let changed_user = {
+    /// Return only sessions previously listed by this device and now absent.
+    /// Their routing state can be forgotten, but their IDs remain reserved.
+    pub fn update_heartbeat(&self, device_id: &str, mut sessions: Vec<SessionInfo>) -> Vec<String> {
+        let (changed_user, removed) = {
             let mut devices = self.devices.write().unwrap();
             let Some(device) = devices.get_mut(device_id) else {
-                return;
+                return Vec::new();
             };
-            for session in &mut sessions {
+            let mut owners = self.session_owners.write().unwrap();
+            let mut seen = HashSet::new();
+            sessions.retain_mut(|session| {
+                if !claim_session(&mut owners, device_id, &session.session_id)
+                    || !seen.insert(session.session_id.clone())
+                {
+                    return false;
+                }
+                session.device_id = device_id.to_string();
                 session.status = SessionStatus::Online;
-            }
+                true
+            });
+            let removed = device
+                .sessions
+                .iter()
+                .filter(|session| !seen.contains(&session.session_id))
+                .map(|session| session.session_id.clone())
+                .collect();
             let changed = !device.connected || device.sessions != sessions;
             device.connected = true;
             device.last_heartbeat = Utc::now();
@@ -138,11 +179,43 @@ impl SessionRegistry {
                     .cmp(&left.created_at)
                     .then_with(|| left.session_id.cmp(&right.session_id))
             });
-            changed.then(|| device.user_id.clone())
+            (changed.then(|| device.user_id.clone()), removed)
         };
         if let Some(user_id) = changed_user {
             self.publish(&user_id);
         }
+        removed
+    }
+
+    /// Resize from the daemon control plane, scoped to its authenticated device.
+    pub fn update_device_session_size(
+        &self,
+        device_id: &str,
+        session_id: &str,
+        cols: u32,
+        rows: u32,
+    ) -> bool {
+        let user_id = {
+            let mut devices = self.devices.write().unwrap();
+            let Some(device) = devices.get_mut(device_id) else {
+                return false;
+            };
+            let Some(session) = device
+                .sessions
+                .iter_mut()
+                .find(|session| session.session_id == session_id)
+            else {
+                return false;
+            };
+            if session.cols == cols && session.rows == rows {
+                return true;
+            }
+            session.cols = cols;
+            session.rows = rows;
+            device.user_id.clone()
+        };
+        self.publish(&user_id);
+        true
     }
 
     pub fn update_session_size(&self, session_id: &str, cols: u32, rows: u32) {
@@ -190,12 +263,48 @@ impl SessionRegistry {
     }
 
     pub fn owns_session(&self, user_id: &str, session_id: &str) -> bool {
-        self.get_user_sessions(user_id).iter().any(|device| {
-            device
-                .sessions
+        self.session_access(user_id, session_id).is_some()
+    }
+
+    pub fn device_access(&self, device_id: &str) -> Option<CancellationToken> {
+        self.device_access.read().unwrap().get(device_id).cloned()
+    }
+
+    pub fn session_access(&self, user_id: &str, session_id: &str) -> Option<CancellationToken> {
+        let devices = self.devices.read().unwrap();
+        let device = devices.values().find(|device| {
+            device.user_id == user_id
+                && device
+                    .sessions
+                    .iter()
+                    .any(|session| session.session_id == session_id)
+        })?;
+        self.device_access(&device.device_id)
+    }
+
+    /// Caller serializes this with connection admission. Cancel before exposing
+    /// released IDs, and return omitted reservations as well as visible sessions.
+    pub fn remove_device(&self, user_id: &str, device_id: &str) -> Vec<String> {
+        let removed = {
+            let mut devices = self.devices.write().unwrap();
+            if devices.get(device_id).is_none_or(|d| d.user_id != user_id) {
+                return Vec::new();
+            }
+            if let Some(access) = self.device_access.write().unwrap().remove(device_id) {
+                access.cancel();
+            }
+            devices.remove(device_id);
+            let mut owners = self.session_owners.write().unwrap();
+            let removed: Vec<_> = owners
                 .iter()
-                .any(|session| session.session_id == session_id)
-        })
+                .filter(|(_, owner)| *owner == device_id)
+                .map(|(sid, _)| sid.clone())
+                .collect();
+            owners.retain(|_, owner| owner != device_id);
+            removed
+        };
+        self.publish(user_id);
+        removed
     }
 
     pub fn set_device_connected(&self, device_id: &str, connected: bool) {
@@ -241,7 +350,7 @@ impl SessionRegistry {
                 }
                 device.connected = false;
                 for session in &mut device.sessions {
-                    session.status = SessionStatus::Unreachable;
+                    session.status = SessionStatus::Offline;
                 }
                 users.push(device.user_id.clone());
             }
@@ -263,7 +372,17 @@ impl SessionRegistry {
     pub fn remove_user(&self, user_id: &str) {
         {
             let mut devices = self.devices.write().unwrap();
+            let mut access = self.device_access.write().unwrap();
+            for device in devices.values().filter(|device| device.user_id == user_id) {
+                if let Some(token) = access.remove(&device.device_id) {
+                    token.cancel();
+                }
+            }
             devices.retain(|_, device| device.user_id != user_id);
+            self.session_owners
+                .write()
+                .unwrap()
+                .retain(|_, device_id| devices.contains_key(device_id));
         }
         let _ = self.updates.send(UserSessionUpdate {
             user_id: user_id.to_string(),
@@ -276,6 +395,195 @@ impl SessionRegistry {
             user_id: user_id.to_string(),
             devices: self.get_user_sessions(user_id),
         });
+    }
+}
+
+fn claim_session(owners: &mut HashMap<String, String>, device_id: &str, session_id: &str) -> bool {
+    match owners.get(session_id) {
+        Some(owner) => owner == device_id,
+        None => {
+            owners.insert(session_id.to_string(), device_id.to_string());
+            true
+        }
+    }
+}
+
+#[cfg(test)]
+mod ownership_tests {
+    use super::*;
+
+    fn session(device_id: &str, session_id: &str) -> SessionInfo {
+        SessionInfo {
+            session_id: session_id.into(),
+            device_id: device_id.into(),
+            shell: "sh".into(),
+            command: String::new(),
+            cwd: "/tmp".into(),
+            cols: 80,
+            rows: 24,
+            status: SessionStatus::Online,
+            created_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn session_created_cannot_claim_another_devices_session_id() {
+        for other_user in ["owner", "attacker"] {
+            let registry = SessionRegistry::new();
+            registry.register_device("original", "owner", "Original");
+            registry.register_device("other", other_user, "Other");
+            registry.add_session("original", session("original", "shared"));
+            registry.add_session("other", session("other", "shared"));
+            assert!(
+                registry.devices.read().unwrap()["other"]
+                    .sessions
+                    .is_empty()
+            );
+            assert!(registry.owns_session("owner", "shared"));
+            assert!(!registry.owns_session("attacker", "shared"));
+        }
+    }
+
+    #[test]
+    fn heartbeat_cannot_claim_another_devices_session_id() {
+        for other_user in ["owner", "attacker"] {
+            let registry = SessionRegistry::new();
+            registry.register_device("original", "owner", "Original");
+            registry.register_device("other", other_user, "Other");
+            registry.update_heartbeat("original", vec![session("original", "shared")]);
+            registry.update_heartbeat(
+                "other",
+                vec![session("other", "shared"), session("other", "fresh")],
+            );
+            let devices = registry.devices.read().unwrap();
+            assert_eq!(devices["other"].sessions.len(), 1);
+            assert_eq!(devices["other"].sessions[0].session_id, "fresh");
+            drop(devices);
+            assert!(!registry.owns_session("attacker", "shared"));
+        }
+    }
+
+    #[test]
+    fn offline_and_omitted_ids_remain_reserved_until_owner_explicitly_removes_them() {
+        let registry = SessionRegistry::new();
+        registry.register_device("original", "owner", "Original");
+        registry.register_device("other", "attacker", "Other");
+        registry.add_session("original", session("original", "shared"));
+        registry.set_device_connected("original", false);
+        registry.add_session("other", session("other", "shared"));
+        assert!(!registry.owns_session("attacker", "shared"));
+        registry.register_device("original", "owner", "Reconnected");
+        registry.update_heartbeat("original", vec![]);
+        registry.remove_session("other", "shared");
+        registry.update_heartbeat("other", vec![session("other", "shared")]);
+        assert!(!registry.owns_session("attacker", "shared"));
+        registry.remove_session("original", "shared");
+        registry.add_session("other", session("other", "shared"));
+        assert!(registry.owns_session("attacker", "shared"));
+    }
+
+    #[test]
+    fn original_device_can_reconnect_refresh_and_restore_its_session() {
+        let registry = SessionRegistry::new();
+        registry.register_device("original", "owner", "Original");
+        registry.add_session("original", session("original", "shared"));
+        registry.set_device_connected("original", false);
+        registry.register_device("original", "owner", "Reconnected");
+        let mut updated = session("original", "shared");
+        updated.cols = 120;
+        registry.add_session("original", updated.clone());
+        registry.update_heartbeat("original", vec![]);
+        registry.update_heartbeat("original", vec![updated]);
+        let devices = registry.get_user_sessions("owner");
+        assert_eq!(devices[0].sessions.len(), 1);
+        assert_eq!(devices[0].sessions[0].cols, 120);
+        assert!(registry.owns_session("owner", "shared"));
+    }
+
+    #[test]
+    fn removing_account_releases_even_omitted_session_reservations() {
+        let registry = SessionRegistry::new();
+        registry.register_device("original", "owner", "Original");
+        registry.register_device("other", "attacker", "Other");
+        registry.add_session("original", session("original", "shared"));
+        registry.update_heartbeat("original", vec![]);
+        registry.remove_user("owner");
+        registry.update_heartbeat("other", vec![session("other", "shared")]);
+        assert!(registry.owns_session("attacker", "shared"));
+    }
+
+    #[test]
+    fn destroy_and_resize_require_the_exact_device_not_just_the_user() {
+        for other_user in ["owner", "attacker"] {
+            let registry = SessionRegistry::new();
+            registry.register_device("original", "owner", "Original");
+            registry.register_device("other", other_user, "Other");
+            registry.add_session("original", session("original", "shared"));
+            assert!(!registry.remove_session("other", "shared"));
+            assert!(!registry.update_device_session_size("other", "shared", 1, 1));
+            assert_eq!(
+                registry.devices.read().unwrap()["original"].sessions[0].cols,
+                80
+            );
+            assert!(registry.update_device_session_size("original", "shared", 120, 40));
+            assert_eq!(
+                registry.devices.read().unwrap()["original"].sessions[0].cols,
+                120
+            );
+            assert!(registry.remove_session("original", "shared"));
+            assert!(!registry.remove_session("original", "shared"));
+        }
+    }
+
+    #[test]
+    fn heartbeat_cleanup_returns_only_its_own_removed_ids() {
+        let registry = SessionRegistry::new();
+        registry.register_device("original", "owner", "Original");
+        registry.register_device("other", "attacker", "Other");
+        registry.add_session("original", session("original", "victim"));
+        registry.add_session("other", session("other", "old"));
+        let removed = registry.update_heartbeat(
+            "other",
+            vec![
+                session("original", "victim"),
+                session("spoofed-device", "fresh"),
+                session("other", "fresh"),
+            ],
+        );
+        assert_eq!(removed, ["old"]);
+        let devices = registry.devices.read().unwrap();
+        assert_eq!(devices["other"].sessions.len(), 1);
+        assert_eq!(devices["other"].sessions[0].device_id, "other");
+        drop(devices);
+        assert!(
+            registry
+                .update_heartbeat("missing", vec![session("missing", "new")])
+                .is_empty()
+        );
+        registry.add_session("original", session("original", "old"));
+        assert!(!registry.owns_session("owner", "old"));
+    }
+
+    #[test]
+    fn simultaneous_devices_cannot_both_claim_the_same_id() {
+        let registry = SessionRegistry::new();
+        registry.register_device("original", "owner", "Original");
+        registry.register_device("other", "attacker", "Other");
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        std::thread::scope(|scope| {
+            for device in ["original", "other"] {
+                let registry = &registry;
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    barrier.wait();
+                    registry.update_heartbeat(device, vec![session(device, "shared")]);
+                });
+            }
+        });
+        assert_ne!(
+            registry.owns_session("owner", "shared"),
+            registry.owns_session("attacker", "shared")
+        );
     }
 }
 

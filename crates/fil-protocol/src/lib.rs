@@ -4,3 +4,6 @@ pub mod proto {
 
 pub mod crypto;
 pub mod ipc;
+#[cfg(unix)]
+pub mod private_fs;
+pub mod tls;

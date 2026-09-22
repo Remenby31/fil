@@ -41,9 +41,9 @@ public struct StopFollowingFilIntent: LiveActivityIntent {
     public func perform() async throws -> some IntentResult {
         for activity in Activity<FilActivityAttributes>.activities
         where activity.attributes.sessionId == sessionId {
-            var finalState = activity.content.state
-            finalState.status = .ended
-            finalState.lastUpdatedAt = Date()
+            let finalState = FilActivityProjection.content(
+                status: .stopped, cwd: "", shell: "", otherSessionCount: 0, privacy: .private_
+            )
             await activity.end(
                 ActivityContent(state: finalState, staleDate: nil),
                 dismissalPolicy: .immediate

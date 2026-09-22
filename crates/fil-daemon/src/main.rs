@@ -18,14 +18,32 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
+    fil_protocol::private_fs::directory(&DaemonConfig::config_dir())?;
+    // Protect historical bytes on a binary-only upgrade, without re-pairing.
+    #[cfg(target_os = "macos")]
+    {
+        let legacy_log = std::path::Path::new("/tmp/fil-daemon.log");
+        fil_protocol::private_fs::harden_owned_legacy_log(legacy_log)?;
+    }
+    let current_log = DaemonConfig::config_dir().join("daemon.log");
+    if current_log.exists() {
+        fil_protocol::private_fs::read(&current_log)?;
+    }
+    if DaemonConfig::config_path().exists() {
+        fil_protocol::private_fs::read(&DaemonConfig::config_path())?;
+    }
     let config = DaemonConfig::load();
     if !config.is_configured() {
         anyhow::bail!("fil is not configured. Run `fil setup` first.");
     }
+    let hub_origin = fil_protocol::tls::hub_url(&config.hub_url)
+        .map_err(anyhow::Error::msg)?
+        .origin()
+        .ascii_serialization();
 
     info!(
         device = %config.device_name,
-        hub = %config.hub_url,
+        hub = %hub_origin,
         "fil-daemon starting"
     );
 

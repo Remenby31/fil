@@ -1,6 +1,17 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Terminal" : {"localizations":{"fr":{"stringUnit":{"state":"translated","value":"Terminal"}}}},
+    "Session available" : {"localizations":{"fr":{"stringUnit":{"state":"translated","value":"Session disponible"}}}},
+    "Update needed" : {"localizations":{"fr":{"stringUnit":{"state":"translated","value":"À actualiser"}}}},
+    "Following stopped" : {"localizations":{"fr":{"stringUnit":{"state":"translated","value":"Suivi arrêté"}}}},
+    "Last update" : {"localizations":{"fr":{"stringUnit":{"state":"translated","value":"Dernière mise à jour"}}}},
+    "Last sync" : {"localizations":{"fr":{"stringUnit":{"state":"translated","value":"Dernière synchronisation"}}}},
+    "Terminals at last sync" : {"localizations":{"fr":{"stringUnit":{"state":"translated","value":"Terminaux à la dernière synchronisation"}}}},
+    "%lld terminals at last sync" : {"localizations":{"fr":{"stringUnit":{"state":"translated","value":"%lld terminaux à la dernière synchronisation"}}}},
+    "No terminals at last sync" : {"localizations":{"fr":{"stringUnit":{"state":"translated","value":"Aucun terminal à la dernière synchronisation"}}}},
+    "See your last synced terminals. Open Fil for current status." : {"localizations":{"fr":{"stringUnit":{"state":"translated","value":"Consultez les derniers terminaux synchronisés. Ouvrez Fil pour connaître leur état actuel."}}}},
+    "Removes the Live Activity without closing the terminal" : {"localizations":{"fr":{"stringUnit":{"state":"translated","value":"Retire l’activité en direct sans fermer le terminal"}}}},
     "active terminal" : { "localizations" : { "fr" : { "stringUnit" : { "state" : "translated", "value" : "terminal actif" } } } },
     "active terminals" : { "localizations" : { "fr" : { "stringUnit" : { "state" : "translated", "value" : "terminaux actifs" } } } },
     "Connected" : { "localizations" : { "fr" : { "stringUnit" : { "state" : "translated", "value" : "Connecté" } } } },

@@ -9,8 +9,14 @@ name = "fil-testclient"
 path = "src/main.rs"
 
 [dependencies]
+fil-protocol = { path = "../fil-protocol" }
+base64 = "0.22"
 tokio = { workspace = true }
 quinn = { workspace = true }
 rustls = { workspace = true }
 anyhow = { workspace = true }
 clap = { version = "4", features = ["derive"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+socket2 = { version = "0.6", features = ["all"] }
+libc = "0.2"

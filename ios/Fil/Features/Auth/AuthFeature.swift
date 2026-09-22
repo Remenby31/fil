@@ -31,7 +31,7 @@ struct AuthFeature {
             case .onAppear:
                 state.isCheckingToken = true
                 return .run { send in
-                    if TokenStorage.loadToken() != nil {
+                    if let token = TokenStorage.loadToken() {
                         let hubURL = TokenStorage.loadHubUrl()
                         guard let baseURL = URL(string: hubURL) else {
                             await send(.tokenCheckCompleted(false))
@@ -39,7 +39,7 @@ struct AuthFeature {
                         }
                         let client = HubClient(baseURL: baseURL)
                         do {
-                            _ = try await client.health()
+                            _ = try await client.listDevices(token: token)
                             await send(.tokenCheckCompleted(true))
                         } catch {
                             await send(.tokenCheckCompleted(false))

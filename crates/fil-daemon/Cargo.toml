@@ -28,6 +28,8 @@ url = "2"
 quinn = { workspace = true }
 rustls = { workspace = true }
 libc = "0.2"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+base64 = "0.22"
 
 [dev-dependencies]
 # start_paused = true, so backoff progressions are measured instantly.

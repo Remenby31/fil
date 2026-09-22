@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::sync::RwLock;
-use tokio::sync::mpsc;
 
 pub struct ProxySession {
     pub session_id: String,
@@ -10,15 +9,28 @@ pub struct ProxySession {
     pub created_at: i64,
     pub cols: u32,
     pub rows: u32,
-    pub proxy_tx: mpsc::Sender<ProxyCommand>,
 }
 
-#[derive(Debug)]
 pub enum ProxyCommand {
     Input(Vec<u8>),
     Resize { cols: u16, rows: u16 },
     ClientAttached,
     ClientDetached,
+}
+
+impl std::fmt::Debug for ProxyCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Input(data) => f.debug_struct("Input").field("bytes", &data.len()).finish(),
+            Self::Resize { cols, rows } => f
+                .debug_struct("Resize")
+                .field("cols", cols)
+                .field("rows", rows)
+                .finish(),
+            Self::ClientAttached => f.write_str("ClientAttached"),
+            Self::ClientDetached => f.write_str("ClientDetached"),
+        }
+    }
 }
 
 pub struct SessionManager {
@@ -32,31 +44,9 @@ impl SessionManager {
         }
     }
 
-    pub fn add(
-        &self,
-        session_id: String,
-        shell: String,
-        command: String,
-        cwd: String,
-        created_at: i64,
-        cols: u32,
-        rows: u32,
-        proxy_tx: mpsc::Sender<ProxyCommand>,
-    ) {
+    pub fn add(&self, session: ProxySession) {
         let mut sessions = self.sessions.write().unwrap();
-        sessions.insert(
-            session_id.clone(),
-            ProxySession {
-                session_id,
-                shell,
-                command,
-                cwd,
-                created_at,
-                cols,
-                rows,
-                proxy_tx,
-            },
-        );
+        sessions.insert(session.session_id.clone(), session);
     }
 
     pub fn remove(&self, session_id: &str) {
@@ -78,11 +68,6 @@ impl SessionManager {
             session.cwd = cwd;
             session.command = command;
         }
-    }
-
-    pub fn get_proxy_tx(&self, session_id: &str) -> Option<mpsc::Sender<ProxyCommand>> {
-        let sessions = self.sessions.read().unwrap();
-        sessions.get(session_id).map(|s| s.proxy_tx.clone())
     }
 
     pub fn all_session_infos(&self) -> Vec<fil_protocol::proto::SessionInfo> {
@@ -107,8 +92,20 @@ impl SessionManager {
         });
         infos
     }
+}
 
-    pub fn count(&self) -> usize {
-        self.sessions.read().unwrap().len()
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+
+    #[test]
+    fn command_diagnostics_do_not_disclose_terminal_input() {
+        let diagnostic = format!("{:?}", ProxyCommand::Input(b"secret-password".to_vec()));
+        assert!(!diagnostic.contains("secret-password"));
+        assert!(
+            !diagnostic.contains("115, 101, 99"),
+            "raw input bytes leaked"
+        );
+        assert_eq!(diagnostic, "Input { bytes: 15 }");
     }
 }

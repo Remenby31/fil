@@ -51,7 +51,11 @@ pub fn spawn_pty(shell: &str) -> Result<PtyProcess> {
             unistd::setsid().ok();
 
             let slave_raw = slave.as_raw_fd();
-            unsafe { libc::ioctl(slave_raw, u64::from(libc::TIOCSCTTY), 0) };
+            #[cfg(target_os = "macos")]
+            let request = u64::from(libc::TIOCSCTTY);
+            #[cfg(not(target_os = "macos"))]
+            let request = libc::TIOCSCTTY;
+            unsafe { libc::ioctl(slave_raw, request, 0) };
 
             unistd::dup2(slave_raw, libc::STDIN_FILENO).ok();
             unistd::dup2(slave_raw, libc::STDOUT_FILENO).ok();

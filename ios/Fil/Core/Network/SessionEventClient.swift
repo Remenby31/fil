@@ -8,13 +8,18 @@ enum SessionEventClient {
     /// URLSession a reason to notice a dead peer sooner than its own 60s-3min.
     private static let pingInterval: TimeInterval = 30
 
-    static func updates() -> AsyncStream<Result<[DeviceState], Error>> {
+    static func updates(
+        makeSocket: @escaping @Sendable () -> TerminalWebSocketTask? = {
+            guard let token = TokenStorage.loadToken(),
+                  let request = SessionEventClient.request(hubURL: TokenStorage.loadHubUrl(), token: token) else { return nil }
+            return URLSession.shared.webSocketTask(with: request)
+        }
+    ) -> AsyncStream<Result<[DeviceState], Error>> {
         AsyncStream { continuation in
             let task = Task {
                 var attempt = 0
                 while !Task.isCancelled {
-                    guard let token = TokenStorage.loadToken(),
-                          let url = Self.url(token: token) else {
+                    guard let socket = makeSocket() else {
                         // Do NOT finish the stream. A nil token here usually
                         // means the Keychain is still locked right after boot;
                         // finishing killed the control plane permanently, with
@@ -24,20 +29,30 @@ enum SessionEventClient {
                         continue
                     }
 
-                    let socket = URLSession.shared.webSocketTask(with: url)
                     socket.resume()
 
                     let pinger = Task {
                         while !Task.isCancelled {
                             try? await Task.sleep(for: .seconds(pingInterval))
                             guard !Task.isCancelled else { return }
-                            socket.sendPing { _ in }
+                            socket.sendPing { error in
+                                if error != nil { socket.cancel(with: .goingAway, reason: nil) }
+                            }
                         }
                     }
 
                     do {
                         while !Task.isCancelled {
-                            let message = try await socket.receive()
+                            let message = try await withTaskCancellationHandler {
+                                try Task.checkCancellation()
+                                return try await withCheckedThrowingContinuation { continuation in
+                                    socket.receive { continuation.resume(with: $0) }
+                                }
+                            } onCancel: {
+                                // Cancelling the consumer does not itself cancel
+                                // a callback-based receive. Closing unblocks it.
+                                socket.cancel(with: .goingAway, reason: nil)
+                            }
                             guard case .string(let text) = message,
                                   let data = text.data(using: .utf8) else { continue }
                             // A malformed frame used to throw out of the read
@@ -50,7 +65,7 @@ enum SessionEventClient {
                             continuation.yield(.success(states))
                         }
                     } catch {
-                        continuation.yield(.failure(error))
+                        if !Task.isCancelled { continuation.yield(.failure(error)) }
                     }
 
                     pinger.cancel()
@@ -69,11 +84,25 @@ enum SessionEventClient {
         return min(raw, maxBackoff) * Double.random(in: 0.85...1.15)
     }
 
-    private static func url(token: String) -> URL? {
-        guard var components = URLComponents(string: TokenStorage.loadHubUrl()) else { return nil }
-        components.scheme = components.scheme == "https" ? "wss" : "ws"
+    static func request(hubURL: String, token: String) -> URLRequest? {
+        guard !token.isEmpty, token.utf8.allSatisfy({ (0x21...0x7e).contains($0) }),
+              var components = URLComponents(string: hubURL),
+              components.host != nil,
+              components.user == nil, components.password == nil else { return nil }
+        #if DEBUG && targetEnvironment(simulator)
+        let localHTTP = components.scheme?.lowercased() == "http"
+            && ["localhost", "127.0.0.1", "::1", "[::1]"].contains(components.host?.lowercased() ?? "")
+        #else
+        let localHTTP = false
+        #endif
+        guard components.scheme?.lowercased() == "https" || localHTTP else { return nil }
+        components.scheme = localHTTP ? "ws" : "wss"
         components.path = "/ws/client"
-        components.queryItems = [URLQueryItem(name: "token", value: token)]
-        return components.url
+        components.query = nil
+        components.fragment = nil
+        guard let url = components.url else { return nil }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        return request
     }
 }

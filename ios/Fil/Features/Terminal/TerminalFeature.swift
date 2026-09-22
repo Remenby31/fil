@@ -21,6 +21,7 @@ struct TerminalFeature {
         var showDisconnectedAlert = false
         var isFollowing = false
         var isFollowRequestInFlight = false
+        var followRevision: UInt64 = 0
         var showLiveActivityUnavailableAlert = false
         var machineName: String
         var otherSessionCount: Int
@@ -45,7 +46,7 @@ struct TerminalFeature {
     enum Action: Equatable {
         case onAppear
         case onDisappear
-        case connectionStateChanged(TerminalConnectionState)
+        case connectionStateChanged(sessionId: String, state: TerminalConnectionState)
         case inputSent(Data)
         case dismiss
         case fontSizeChanged(CGFloat)
@@ -53,8 +54,9 @@ struct TerminalFeature {
         case latencyUpdated(Int)
         case reconnectTapped
         case followTapped
-        case followingStatusLoaded(Bool)
-        case followingChanged(isFollowing: Bool, requestedFollow: Bool)
+        case refreshFollowingStatus
+        case followingStatusLoaded(sessionId: String, revision: UInt64, isFollowing: Bool)
+        case followingChanged(sessionId: String, revision: UInt64, isFollowing: Bool, requestedFollow: Bool)
         case dismissLiveActivityUnavailableAlert
         case nextSession
         case previousSession
@@ -62,6 +64,7 @@ struct TerminalFeature {
     }
 
     @Dependency(\.terminalClient) private var terminalClient
+    @Dependency(\.terminalFollowClient) private var followClient
 
     var body: some ReducerOf<Self> {
         Reduce { state, action in
@@ -72,31 +75,29 @@ struct TerminalFeature {
                 let hubHost = Self.quicHost()
 
                 return .merge(
-                    .run { send in
-                        if #available(iOS 16.2, *) {
-                            await send(
-                                .followingStatusLoaded(
-                                    await FilActivityManager.shared.isFollowing(sessionId: sessionId)
-                                )
-                            )
-                        }
-                    },
+                    refreshFollowingStatus(&state),
                     .run { send in
                         for await connectionState in terminalClient.open(sessionId, hubHost) {
-                            await send(.connectionStateChanged(connectionState))
+                            await send(.connectionStateChanged(sessionId: sessionId, state: connectionState))
                         }
                     }
                     .cancellable(id: CancelID.quic, cancelInFlight: true)
                 )
 
-            case .onDisappear:
+            case .onDisappear, .dismiss:
                 let sessionId = state.session.id
+                // Close synchronously so a delayed effect cannot close a
+                // replacement opened by a rapid disappear/appear sequence.
+                terminalClient.close(sessionId)
+                state.followRevision &+= 1
+                state.isFollowRequestInFlight = false
                 return .merge(
                     .cancel(id: CancelID.quic),
-                    .run { _ in terminalClient.close(sessionId) }
+                    .cancel(id: CancelID.followStatus)
                 )
 
-            case .connectionStateChanged(let connectionState):
+            case let .connectionStateChanged(sessionId, connectionState):
+                guard sessionId == state.session.id else { return .none }
                 state.connectionState = connectionState
                 state.isConnected = connectionState == .connected
                 // Only the terminal states warrant a modal; a retry in flight
@@ -121,9 +122,6 @@ struct TerminalFeature {
             case .inputSent(let data):
                 let sessionId = state.session.id
                 return .run { _ in terminalClient.sendInput(sessionId, data) }
-
-            case .dismiss:
-                return .none
 
             case .fontSizeChanged(let size):
                 state.fontSize = max(10, min(24, size))
@@ -160,6 +158,8 @@ struct TerminalFeature {
             case .followTapped:
                 guard !state.isFollowRequestInFlight else { return .none }
                 state.isFollowRequestInFlight = true
+                state.followRevision &+= 1
+                let revision = state.followRevision
 
                 let shouldFollow = !state.isFollowing
                 let session = state.session
@@ -168,44 +168,22 @@ struct TerminalFeature {
                 let status: FilActivityStatus = state.isConnected ? .connected : .reconnecting
 
                 return .run { send in
-                    if #available(iOS 16.2, *) {
-                        if shouldFollow {
-                            let didFollow = await FilActivityManager.shared.follow(
-                                session: session,
-                                machineName: machineName,
-                                otherSessionCount: otherSessionCount,
-                                status: status
-                            )
-                            await send(
-                                .followingChanged(
-                                    isFollowing: didFollow,
-                                    requestedFollow: true
-                                )
-                            )
-                        } else {
-                            await FilActivityManager.shared.stopFollowing(sessionId: session.id)
-                            await send(
-                                .followingChanged(
-                                    isFollowing: false,
-                                    requestedFollow: false
-                                )
-                            )
-                        }
-                    } else {
-                        await send(
-                            .followingChanged(
-                                isFollowing: false,
-                                requestedFollow: shouldFollow
-                            )
-                        )
-                    }
+                    let following = await followClient.setFollowing(shouldFollow, session, machineName, otherSessionCount, status)
+                    await send(.followingChanged(sessionId: session.id, revision: revision,
+                                                 isFollowing: following, requestedFollow: shouldFollow))
                 }
 
-            case .followingStatusLoaded(let isFollowing):
+            case .refreshFollowingStatus:
+                return refreshFollowingStatus(&state)
+
+            case let .followingStatusLoaded(sessionId, revision, isFollowing):
+                guard sessionId == state.session.id, revision == state.followRevision,
+                      !state.isFollowRequestInFlight else { return .none }
                 state.isFollowing = isFollowing
                 return .none
 
-            case let .followingChanged(isFollowing, requestedFollow):
+            case let .followingChanged(sessionId, revision, isFollowing, requestedFollow):
+                guard sessionId == state.session.id, revision == state.followRevision else { return .none }
                 state.isFollowRequestInFlight = false
                 state.isFollowing = isFollowing
                 state.showLiveActivityUnavailableAlert = requestedFollow && !isFollowing
@@ -230,7 +208,19 @@ struct TerminalFeature {
         }
     }
 
-    private enum CancelID { case quic }
+    private enum CancelID { case quic, followStatus }
+
+    private func refreshFollowingStatus(_ state: inout State) -> Effect<Action> {
+        guard !state.isFollowRequestInFlight else { return .none }
+        state.followRevision &+= 1
+        let revision = state.followRevision
+        let sessionId = state.session.id
+        return .run { send in
+            let following = await followClient.isFollowing(sessionId)
+            await send(.followingStatusLoaded(sessionId: sessionId, revision: revision, isFollowing: following))
+        }
+        .cancellable(id: CancelID.followStatus, cancelInFlight: true)
+    }
 
     private func switchSession(_ state: inout State, offset: Int) -> Effect<Action> {
         guard state.availableSessions.count > 1,
@@ -255,12 +245,16 @@ struct TerminalFeature {
         state.isConnected = false
         state.connectionState = .connecting
         state.isFollowing = false
+        state.isFollowRequestInFlight = false
+        state.followRevision &+= 1
+        state.showLiveActivityUnavailableAlert = false
         state.showDisconnectedAlert = false
         state.latencyMs = nil
 
-        return .merge(
+        terminalClient.close(previousSessionId)
+        return .concatenate(
             .cancel(id: CancelID.quic),
-            .run { _ in terminalClient.close(previousSessionId) },
+            .cancel(id: CancelID.followStatus),
             .send(.onAppear)
         )
     }
@@ -277,7 +271,7 @@ struct TerminalFeature {
     }
 }
 
-fileprivate struct TerminalClientDependency: Sendable {
+struct TerminalClientDependency: Sendable {
     var open: @Sendable (_ sessionId: String, _ hubHost: String) -> AsyncStream<TerminalConnectionState>
     var close: @Sendable (_ sessionId: String) -> Void
     var reconnect: @Sendable (_ sessionId: String) -> Void
@@ -317,17 +311,73 @@ extension TerminalClientDependency: DependencyKey {
 /// only by an explicit `close` — never by a view disappearing or a TCA effect
 /// being cancelled.
 final class TerminalConnectionRegistry: @unchecked Sendable {
-    static let shared = TerminalConnectionRegistry()
+    static let shared = live()
 
-    private let lock = NSLock()
+    /// Keep production transport ordering in one testable builder. The
+    /// injected initializer below retains its existing factory signatures.
+    static func live(
+        monitorsNetwork: Bool = true,
+        makeWebSocket: @escaping @Sendable () -> TerminalTransport = {
+            WebSocketTerminalClient(hubURL: TokenStorage.loadHubUrl(), token: TokenStorage.loadToken())
+        },
+        makeQUIC: @escaping @Sendable (String) -> TerminalTransport = {
+            QUICTerminalClient(hubHost: $0)
+        },
+        ticketProvider: @escaping @Sendable (String) async throws -> SessionTicketResponse? = {
+            try await TerminalConnectionRegistry.mintTicket(sessionId: $0)
+        }
+    ) -> TerminalConnectionRegistry {
+        TerminalConnectionRegistry(
+            monitorsNetwork: monitorsNetwork,
+            makeTransport: { _, _ in makeWebSocket() },
+            makeHostFallbackTransport: { _, host in makeQUIC(host) },
+            retryPrimaryAfterFallbackFailure: true,
+            ticketProvider: ticketProvider
+        )
+    }
+
+    private let lock = NSRecursiveLock()
     private var sessions: [String: TerminalSession] = [:]
+    private var hubHosts: [String: String] = [:]
     private let pathMonitor = NWPathMonitor()
     private var isMonitoringPath = false
+    private var isBackgrounded = false
+    private let monitorsNetwork: Bool
 
-    /// Overridable so tests can drive the state machine without networking.
-    var makeTransport: @Sendable (_ sessionId: String, _ hubHost: String) -> TerminalTransport = {
-        _, hubHost in
-        QUICTerminalClient(hubHost: hubHost)
+    /// Immutable dependencies keep test registries isolated from the live one.
+    private let makeTransport: @Sendable (_ sessionId: String, _ hubHost: String) -> TerminalTransport
+    private let makeFallbackTransport: (@Sendable (String, String) -> TerminalTransport)?
+    private let retryPrimaryAfterFallbackFailure: Bool
+    private let ticketProvider: @Sendable (String) async throws -> SessionTicketResponse?
+
+    init(
+        monitorsNetwork: Bool = true,
+        makeTransport: @escaping @Sendable (String, String) -> TerminalTransport = { _, host in
+            QUICTerminalClient(hubHost: host)
+        },
+        makeFallbackTransport: (@Sendable (String) -> TerminalTransport)? = nil,
+        makeHostFallbackTransport: (@Sendable (String, String) -> TerminalTransport)? = nil,
+        retryPrimaryAfterFallbackFailure: Bool = false,
+        ticketProvider: @escaping @Sendable (String) async throws -> SessionTicketResponse? = {
+            try await TerminalConnectionRegistry.mintTicket(sessionId: $0)
+        }
+    ) {
+        self.monitorsNetwork = monitorsNetwork
+        self.makeTransport = makeTransport
+        if let makeHostFallbackTransport {
+            self.makeFallbackTransport = makeHostFallbackTransport
+        } else if let makeFallbackTransport {
+            self.makeFallbackTransport = { sid, _ in makeFallbackTransport(sid) }
+        } else {
+            self.makeFallbackTransport = nil
+        }
+        self.retryPrimaryAfterFallbackFailure = retryPrimaryAfterFallbackFailure
+        self.ticketProvider = ticketProvider
+    }
+
+    deinit {
+        pathMonitor.cancel()
+        for session in sessions.values { session.shutdown() }
     }
 
     /// The relay for a session, created with the session and stable for its
@@ -339,18 +389,32 @@ final class TerminalConnectionRegistry: @unchecked Sendable {
 
     private func session(sessionId: String, hubHost: String?) -> TerminalSession {
         lock.filWithLock {
+            if let hubHost { hubHosts[sessionId] = hubHost }
             if let existing = sessions[sessionId] {
                 return existing
             }
-            let host = hubHost ?? ""
-            let make = makeTransport
+            let ticketProvider = ticketProvider
             let created = TerminalSession(
                 sessionId: sessionId,
-                makeTransport: { sid in make(sid, host) },
-                mintTicket: { sid in await Self.mintTicket(sessionId: sid) }
+                makeTransport: transportFactory(makeTransport),
+                makeFallbackTransport: makeFallbackTransport.map { transportFactory($0) },
+                retryPrimaryAfterFallbackFailure: retryPrimaryAfterFallbackFailure,
+                mintTicket: ticketProvider
             )
+            if isBackgrounded { created.suspend() }
             sessions[sessionId] = created
             return created
+        }
+    }
+
+    /// Resolve the host at attempt time: the view may create the relay before
+    /// open supplies the real host. Both primary and alternate use this path.
+    private func transportFactory(
+        _ make: @escaping @Sendable (String, String) -> TerminalTransport
+    ) -> @Sendable (String) -> TerminalTransport {
+        { [weak self] sid in
+            let host = self?.lock.filWithLock { self?.hubHosts[sid] ?? "" } ?? ""
+            return make(sid, host)
         }
     }
 
@@ -358,11 +422,13 @@ final class TerminalConnectionRegistry: @unchecked Sendable {
     /// Idempotent: repeated calls attach another subscriber to the same live
     /// connection instead of tearing it down and rebuilding it.
     func open(sessionId: String, hubHost: String) -> AsyncStream<TerminalConnectionState> {
-        startPathMonitoringIfNeeded()
-        let session = session(sessionId: sessionId, hubHost: hubHost)
-        let stream = session.subscribe()
-        session.connectIfNeeded()
-        return stream
+        lock.filWithLock {
+            let session = session(sessionId: sessionId, hubHost: hubHost)
+            let stream = session.subscribe()
+            session.connectIfNeeded()
+            startPathMonitoringIfNeeded()
+            return stream
+        }
     }
 
     /// One monitor for the whole app. `pathUpdateHandler` fires on every path
@@ -370,7 +436,7 @@ final class TerminalConnectionRegistry: @unchecked Sendable {
     /// idempotent — the old ConnectionManager opened a new socket on each one.
     private func startPathMonitoringIfNeeded() {
         let shouldStart = lock.filWithLock {
-            guard !isMonitoringPath else { return false }
+            guard monitorsNetwork, !isMonitoringPath else { return false }
             isMonitoringPath = true
             return true
         }
@@ -388,15 +454,22 @@ final class TerminalConnectionRegistry: @unchecked Sendable {
     }
 
     /// Called on scene phase transitions; see FilApp.
-    func applicationDidEnterBackground() {
-        for session in lock.filWithLock({ Array(sessions.values) }) {
-            session.suspend()
+    func applicationDidEnterBackground(completion: @escaping @Sendable () -> Void = {}) {
+        let detachments = DispatchGroup()
+        lock.filWithLock {
+            isBackgrounded = true
+            for session in sessions.values {
+                detachments.enter()
+                session.suspend { detachments.leave() }
+            }
         }
+        detachments.notify(queue: .main, execute: completion)
     }
 
     func applicationWillEnterForeground() {
-        for session in lock.filWithLock({ Array(sessions.values) }) {
-            session.resume()
+        lock.filWithLock {
+            isBackgrounded = false
+            for session in sessions.values { session.resume() }
         }
     }
 
@@ -407,8 +480,10 @@ final class TerminalConnectionRegistry: @unchecked Sendable {
 
     /// The only teardown path.
     func close(sessionId: String) {
-        let session = lock.filWithLock { sessions.removeValue(forKey: sessionId) }
-        session?.shutdown()
+        lock.filWithLock {
+            hubHosts.removeValue(forKey: sessionId)
+            sessions.removeValue(forKey: sessionId)?.shutdown()
+        }
     }
 
     func sendInput(sessionId: String, data: Data) {
@@ -419,11 +494,9 @@ final class TerminalConnectionRegistry: @unchecked Sendable {
         lock.filWithLock { sessions[sessionId] }?.resize(cols: cols, rows: rows)
     }
 
-    /// Fetches a single-use QUIC attach ticket. A failure is not fatal: the
-    /// client falls back to the legacy header, so an older hub keeps working.
-    private static func mintTicket(sessionId: String) async -> String? {
-        guard let token = TokenStorage.loadToken() else { return nil }
-        return try? await HubClient().sessionTicket(sessionId: sessionId, token: token)
+    private static func mintTicket(sessionId: String) async throws -> SessionTicketResponse? {
+        guard let token = TokenStorage.loadToken() else { throw HubError.httpError(401) }
+        return try await HubClient().sessionTicket(sessionId: sessionId, token: token)
     }
 
     // MARK: - Test seams
@@ -436,6 +509,7 @@ final class TerminalConnectionRegistry: @unchecked Sendable {
         let all = lock.filWithLock {
             let s = sessions
             sessions.removeAll()
+            hubHosts.removeAll()
             return s
         }
         for (_, session) in all {
@@ -445,13 +519,40 @@ final class TerminalConnectionRegistry: @unchecked Sendable {
 }
 
 extension DependencyValues {
-    fileprivate var terminalClient: TerminalClientDependency {
+    var terminalClient: TerminalClientDependency {
         get { self[TerminalClientDependency.self] }
         set { self[TerminalClientDependency.self] = newValue }
     }
+
+    var terminalFollowClient: TerminalFollowClient {
+        get { self[TerminalFollowClient.self] }
+        set { self[TerminalFollowClient.self] = newValue }
+    }
 }
 
-extension NSLock {
+struct TerminalFollowClient: Sendable, DependencyKey {
+    var isFollowing: @Sendable (String) async -> Bool
+    var setFollowing: @Sendable (Bool, Session, String, Int, FilActivityStatus) async -> Bool
+
+    static let liveValue = Self(
+        isFollowing: { sessionId in
+            if #available(iOS 16.2, *) { return await FilActivityManager.shared.isFollowing(sessionId: sessionId) }
+            return false
+        },
+        setFollowing: { shouldFollow, session, machineName, otherSessionCount, status in
+            guard #available(iOS 16.2, *) else { return false }
+            if shouldFollow {
+                return await FilActivityManager.shared.follow(session: session, machineName: machineName,
+                                                            otherSessionCount: otherSessionCount, status: status)
+            }
+            await FilActivityManager.shared.stopFollowing(sessionId: session.id)
+            return false
+        }
+    )
+    static let testValue = Self(isFollowing: { _ in false }, setFollowing: { _, _, _, _, _ in false })
+}
+
+extension NSLocking {
     func filWithLock<T>(_ body: () throws -> T) rethrows -> T {
         lock()
         defer { unlock() }

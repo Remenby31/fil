@@ -60,6 +60,7 @@ pub async fn create_session_ticket(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> Result<Json<SessionTicket>, StatusCode> {
+    let _admission = state.quic_router.admission.lock().await;
     if !state.sessions.owns_session(&auth.user_id, &session_id) {
         // Deliberately NOT_FOUND rather than FORBIDDEN: a user who does not
         // own a session should not be able to probe whether it exists.
@@ -67,10 +68,32 @@ pub async fn create_session_ticket(
     }
 
     let ticket = state.tickets.issue(&session_id, &auth.user_id);
-    Ok(Json(SessionTicket { ticket }))
+    Ok(Json(SessionTicket {
+        ticket,
+        quic_certificate: state.quic_certificate.clone(),
+    }))
+}
+
+pub async fn create_daemon_ticket(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+) -> Result<Json<SessionTicket>, StatusCode> {
+    let _admission = state.quic_router.admission.lock().await;
+    if !state.sessions.owns_session(&auth.user_id, &session_id) {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let ticket = state
+        .tickets
+        .issue(&format!("daemon:{session_id}"), &auth.user_id);
+    Ok(Json(SessionTicket {
+        ticket,
+        quic_certificate: state.quic_certificate.clone(),
+    }))
 }
 
 #[derive(serde::Serialize)]
 pub struct SessionTicket {
     pub ticket: String,
+    pub quic_certificate: String,
 }

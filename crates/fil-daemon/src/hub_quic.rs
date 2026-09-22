@@ -1,11 +1,16 @@
 use crate::config::DaemonConfig;
 use crate::session_manager::ProxyCommand;
 use anyhow::{Context, Result};
+use futures_util::{SinkExt, StreamExt};
 use quinn::Endpoint;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio::time::{Instant, timeout};
+use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest};
 use tracing::{info, warn};
+use url::Url;
 
 const FRAME_INPUT: u8 = 0x00;
 const FRAME_RESIZE: u8 = 0x01;
@@ -14,13 +19,16 @@ const FRAME_CLIENT_DETACHED: u8 = 0x03;
 const MAX_INPUT_FRAME_BYTES: usize = 1024 * 1024;
 const QUIC_IDLE_TIMEOUT_SECS: u64 = 15;
 const QUIC_KEEP_ALIVE_SECS: u64 = 5;
+const QUIC_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const IO_TIMEOUT: Duration = Duration::from_secs(5);
 const INITIAL_BACKOFF_SECS: u64 = 1;
 /// A long reconnect gap is worse than a busy one: while the daemon is not
 /// registered, the hub happily accepts an iOS attach and then drops every
 /// keystroke on the floor. Keep the hole short.
 const MAX_BACKOFF_SECS: u64 = 5;
 
-/// What a single QUIC stream attempt ended up doing, reported even when the
+/// What a single data stream attempt ended up doing, reported even when the
 /// attempt finishes with an error (a stream can be established and then fail
 /// mid-flight, which still counts as a success for backoff purposes).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -31,10 +39,12 @@ struct StreamOutcome {
     client_attached: bool,
 }
 
-pub async fn start(config: DaemonConfig) -> Result<QuicHub> {
+fn client_config(certificate: Vec<u8>) -> Result<quinn::ClientConfig> {
     let mut crypto = rustls::ClientConfig::builder()
         .dangerous()
-        .with_custom_certificate_verifier(Arc::new(SkipServerVerification))
+        .with_custom_certificate_verifier(Arc::new(fil_protocol::tls::PinnedServerCertificate(
+            certificate,
+        )))
         .with_no_client_auth();
 
     crypto.alpn_protocols = vec![b"fil".to_vec()];
@@ -51,20 +61,17 @@ pub async fn start(config: DaemonConfig) -> Result<QuicHub> {
     ));
     client_config.transport_config(Arc::new(transport));
 
-    let mut endpoint = Endpoint::client(SocketAddr::from(([0, 0, 0, 0], 0)))?;
-    endpoint.set_default_client_config(client_config);
+    Ok(client_config)
+}
 
-    Ok(QuicHub {
-        endpoint,
-        host: config.effective_quic_host(),
-        port: config.quic_port,
-    })
+pub async fn start(config: DaemonConfig) -> Result<QuicHub> {
+    let endpoint = Endpoint::client(SocketAddr::from(([0, 0, 0, 0], 0)))?;
+    Ok(QuicHub { endpoint, config })
 }
 
 pub struct QuicHub {
     endpoint: Endpoint,
-    host: String,
-    port: u16,
+    config: DaemonConfig,
 }
 
 impl QuicHub {
@@ -76,11 +83,10 @@ impl QuicHub {
         let (output_tx, output_rx) = mpsc::channel::<Vec<u8>>(512);
 
         let endpoint = self.endpoint.clone();
-        let host = self.host.clone();
-        let port = self.port;
+        let config = self.config.clone();
 
         tokio::spawn(async move {
-            quic_stream_loop(endpoint, host, port, session_id, proxy_tx, output_rx).await;
+            quic_stream_loop(endpoint, config, session_id, proxy_tx, output_rx).await;
         });
 
         Ok(output_tx)
@@ -89,11 +95,10 @@ impl QuicHub {
 
 async fn quic_stream_loop(
     endpoint: Endpoint,
-    host: String,
-    port: u16,
+    config: DaemonConfig,
     session_id: String,
     proxy_tx: mpsc::Sender<ProxyCommand>,
-    mut output_rx: mpsc::Receiver<Vec<u8>>,
+    output_rx: mpsc::Receiver<Vec<u8>>,
 ) {
     let sid = session_id.clone();
     // Calls are strictly sequential, but the borrow has to outlive each closure
@@ -102,26 +107,18 @@ async fn quic_stream_loop(
 
     reconnect_loop(session_id, proxy_tx.clone(), move || {
         let endpoint = endpoint.clone();
-        let host = host.clone();
+        let config = config.clone();
         let sid = sid.clone();
         let proxy_tx = proxy_tx.clone();
         let output_rx = output_rx.clone();
         async move {
             let mut rx = output_rx.lock().await;
             let mut outcome = StreamOutcome::default();
-            match connect_and_run_stream(
-                &endpoint,
-                &host,
-                port,
-                &sid,
-                &proxy_tx,
-                &mut rx,
-                &mut outcome,
-            )
-            .await
+            match connect_and_run_stream(&endpoint, &config, &sid, &proxy_tx, &mut rx, &mut outcome)
+                .await
             {
-                Ok(()) => info!(session_id = %sid, "QUIC stream closed normally"),
-                Err(e) => warn!(session_id = %sid, error = %e, "QUIC stream error"),
+                Ok(()) => info!(session_id = %sid, "data stream closed normally"),
+                Err(e) => warn!(session_id = %sid, error = %e, "data stream error"),
             }
             outcome
         }
@@ -142,7 +139,10 @@ async fn reconnect_loop<F, Fut>(
     let mut backoff = INITIAL_BACKOFF_SECS;
 
     loop {
-        let outcome = connect().await;
+        let outcome = tokio::select! {
+            outcome = connect() => outcome,
+            _ = proxy_tx.closed() => break,
+        };
 
         // Only tell the proxy to restore its local window size if a client was
         // genuinely attached. Firing this unconditionally SIGWINCHes the user's
@@ -153,7 +153,7 @@ async fn reconnect_loop<F, Fut>(
 
         // Check if the proxy is still alive (output_rx not closed)
         if proxy_tx.is_closed() {
-            info!(session_id = %session_id, "proxy gone, stopping QUIC reconnect");
+            info!(session_id = %session_id, "proxy gone, stopping data reconnect");
             break;
         }
 
@@ -164,43 +164,198 @@ async fn reconnect_loop<F, Fut>(
             backoff = INITIAL_BACKOFF_SECS;
         }
 
-        info!(session_id = %session_id, backoff_s = backoff, "reconnecting QUIC stream...");
-        tokio::time::sleep(std::time::Duration::from_secs(backoff)).await;
+        info!(session_id = %session_id, backoff_s = backoff, "reconnecting data stream...");
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(backoff)) => {},
+            _ = proxy_tx.closed() => break,
+        }
         backoff = (backoff * 2).min(MAX_BACKOFF_SECS);
     }
 }
 
 async fn connect_and_run_stream(
     endpoint: &Endpoint,
-    host: &str,
-    port: u16,
+    config: &DaemonConfig,
     session_id: &str,
     proxy_tx: &mpsc::Sender<ProxyCommand>,
     output_rx: &mut mpsc::Receiver<Vec<u8>>,
     outcome: &mut StreamOutcome,
 ) -> Result<()> {
-    let addr_str = format!("{}:{}", host, port);
-    let addr = tokio::net::lookup_host(&addr_str)
+    use base64::Engine;
+    #[derive(serde::Deserialize)]
+    struct Ticket {
+        ticket: String,
+        quic_certificate: String,
+    }
+    // No redirect may downgrade HTTPS or send the bearer token to another host.
+    // In particular, auth/ownership errors must not be treated as UDP failures.
+    let ticket: Ticket = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| anyhow::anyhow!("could not initialize HTTPS client"))?
+        .post(data_url(&config.hub_url, session_id, false)?)
+        .bearer_auth(&config.token)
+        .timeout(CONNECT_TIMEOUT)
+        .send()
+        .await
+        .map_err(ticket_error)?
+        .error_for_status()
+        .map_err(ticket_error)?
+        .json()
+        .await
+        .map_err(|_| anyhow::anyhow!("invalid daemon ticket response"))?;
+    let certificate = base64::engine::general_purpose::STANDARD
+        .decode(&ticket.quic_certificate)
+        .context("invalid QUIC certificate encoding")?;
+
+    match timeout(
+        QUIC_CONNECT_TIMEOUT,
+        connect_quic_stream(endpoint, config, session_id, &ticket.ticket, certificate),
+    )
+    .await
+    {
+        Ok(Ok((conn, send, recv))) => {
+            run_quic_stream(conn, send, recv, session_id, proxy_tx, output_rx, outcome).await
+        }
+        result => {
+            let reason = match result {
+                Err(_) => "QUIC connect timed out".to_owned(),
+                Ok(Err(error)) => error.to_string(),
+                Ok(Ok(_)) => unreachable!(),
+            };
+            warn!(%session_id, %reason, "trying authenticated WebSocket data fallback");
+            connect_and_run_ws(config, session_id, proxy_tx, output_rx, outcome).await
+        }
+    }
+}
+
+fn ticket_error(error: reqwest::Error) -> anyhow::Error {
+    // Never format a reqwest URL or an HTTP/WebSocket response: either can
+    // contain credentials. Keep the actionable category/status, not secrets.
+    if let Some(status) = error.status() {
+        anyhow::anyhow!("daemon ticket rejected: HTTP {}", status.as_u16())
+    } else if error.is_timeout() {
+        anyhow::anyhow!("daemon ticket HTTPS request timed out")
+    } else if error.is_connect() {
+        anyhow::anyhow!("daemon ticket HTTPS connection or TLS verification failed")
+    } else {
+        anyhow::anyhow!("daemon ticket HTTPS request failed")
+    }
+}
+
+fn data_url(hub_url: &str, session_id: &str, websocket: bool) -> Result<Url> {
+    let mut url = fil_protocol::tls::hub_url(hub_url).map_err(anyhow::Error::msg)?;
+    anyhow::ensure!(
+        url.username().is_empty() && url.password().is_none(),
+        "hub URL must not contain credentials"
+    );
+    let scheme = match (url.scheme(), websocket) {
+        ("https", true) => "wss",
+        ("http", true) => "ws", // Explicit local-development HTTP configuration only.
+        ("https", false) => "https",
+        ("http", false) => "http",
+        _ => anyhow::bail!("hub URL must use HTTP or HTTPS"),
+    };
+    url.set_scheme(scheme)
+        .map_err(|_| anyhow::anyhow!("invalid hub URL scheme"))?;
+    url.set_query(None);
+    url.set_fragment(None);
+    {
+        let mut path = url
+            .path_segments_mut()
+            .map_err(|_| anyhow::anyhow!("invalid hub URL path"))?;
+        path.clear();
+        if websocket {
+            path.extend(["ws", "data", session_id]);
+        } else {
+            path.extend(["sessions", session_id, "daemon-ticket"]);
+        }
+    }
+    if websocket {
+        url.query_pairs_mut().append_pair("role", "daemon");
+    }
+    Ok(url)
+}
+
+fn data_ws_request(
+    config: &DaemonConfig,
+    session_id: &str,
+) -> Result<tokio_tungstenite::tungstenite::http::Request<()>> {
+    let url = data_url(&config.hub_url, session_id, true)?;
+    let mut request = url
+        .as_str()
+        .into_client_request()
+        .map_err(|_| anyhow::anyhow!("invalid data WebSocket request"))?;
+    let mut authorization = format!("Bearer {}", config.token)
+        .parse::<tokio_tungstenite::tungstenite::http::HeaderValue>()
+        .map_err(|_| anyhow::anyhow!("invalid bearer header"))?;
+    authorization.set_sensitive(true);
+    request.headers_mut().insert("Authorization", authorization);
+    Ok(request)
+}
+
+async fn connect_quic_stream(
+    endpoint: &Endpoint,
+    config: &DaemonConfig,
+    session_id: &str,
+    ticket: &str,
+    certificate: Vec<u8>,
+) -> Result<(quinn::Connection, quinn::SendStream, quinn::RecvStream)> {
+    let host = config.effective_quic_host();
+    let addr = tokio::net::lookup_host((host.as_str(), config.quic_port))
         .await
         .context("DNS resolution failed")?
         .find(|a| a.is_ipv4())
-        .or_else(|| addr_str.parse().ok())
         .context("could not resolve hub QUIC address")?;
 
     let conn = endpoint
-        .connect(addr, host)?
+        .connect_with(client_config(certificate)?, addr, &host)
+        .map_err(|_| anyhow::anyhow!("QUIC connection could not start"))?
         .await
-        .context("QUIC connection failed")?;
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "{}",
+                match error {
+                    quinn::ConnectionError::TimedOut => "QUIC connection timed out",
+                    quinn::ConnectionError::TransportError(_) =>
+                        "QUIC transport or certificate verification failed",
+                    _ => "QUIC connection failed",
+                }
+            )
+        })?;
 
-    let (mut send, mut recv) = conn.open_bi().await?;
+    let (mut send, recv) = conn.open_bi().await.context("QUIC stream open failed")?;
 
-    // Stream header: 0x01 = daemon, then session_id
-    send.write_all(&[0x01]).await?;
+    // Authenticated daemon stream, with a purpose-bound single-use ticket.
+    let mut header = vec![0x11];
     let sid_bytes = session_id.as_bytes();
-    send.write_all(&(sid_bytes.len() as u16).to_be_bytes())
-        .await?;
-    send.write_all(sid_bytes).await?;
+    header.extend_from_slice(
+        &u16::try_from(sid_bytes.len())
+            .context("session ID too long")?
+            .to_be_bytes(),
+    );
+    header.extend_from_slice(sid_bytes);
+    header.extend_from_slice(
+        &u16::try_from(ticket.len())
+            .context("daemon ticket too long")?
+            .to_be_bytes(),
+    );
+    header.extend_from_slice(ticket.as_bytes());
+    send.write_all(&header)
+        .await
+        .context("QUIC authentication header write failed")?;
+    Ok((conn, send, recv))
+}
 
+async fn run_quic_stream(
+    conn: quinn::Connection,
+    mut send: quinn::SendStream,
+    mut recv: quinn::RecvStream,
+    session_id: &str,
+    proxy_tx: &mpsc::Sender<ProxyCommand>,
+    output_rx: &mut mpsc::Receiver<Vec<u8>>,
+    outcome: &mut StreamOutcome,
+) -> Result<()> {
     info!(session_id = %session_id, "QUIC stream opened");
     outcome.established = true;
 
@@ -217,24 +372,19 @@ async fn connect_and_run_stream(
     };
 
     let recv_task = async {
-        loop {
-            match read_command_frame(&mut recv).await {
-                Ok(Some(cmd)) => {
-                    info!(session_id = %session_id, cmd = ?cmd, "QUIC → proxy command");
-                    match cmd {
-                        ProxyCommand::ClientAttached => {
-                            client_attached.store(true, std::sync::atomic::Ordering::Relaxed)
-                        }
-                        ProxyCommand::ClientDetached => {
-                            client_attached.store(false, std::sync::atomic::Ordering::Relaxed)
-                        }
-                        _ => {}
-                    }
-                    if proxy_tx.send(cmd).await.is_err() {
-                        break;
-                    }
+        while let Ok(Some(cmd)) = read_command_frame(&mut recv).await {
+            // Never log input bytes: they may contain passwords.
+            match cmd {
+                ProxyCommand::ClientAttached => {
+                    client_attached.store(true, std::sync::atomic::Ordering::Relaxed)
                 }
-                Ok(None) | Err(_) => break,
+                ProxyCommand::ClientDetached => {
+                    client_attached.store(false, std::sync::atomic::Ordering::Relaxed)
+                }
+                _ => {}
+            }
+            if proxy_tx.send(cmd).await.is_err() {
+                break;
             }
         }
     };
@@ -245,8 +395,118 @@ async fn connect_and_run_stream(
     }
 
     outcome.client_attached = client_attached.load(std::sync::atomic::Ordering::Relaxed);
+    conn.close(0u32.into(), b"data stream ended");
 
     Ok(())
+}
+
+async fn connect_and_run_ws(
+    config: &DaemonConfig,
+    session_id: &str,
+    proxy_tx: &mpsc::Sender<ProxyCommand>,
+    output_rx: &mut mpsc::Receiver<Vec<u8>>,
+    outcome: &mut StreamOutcome,
+) -> Result<()> {
+    let ws_config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
+        .max_message_size(Some(MAX_INPUT_FRAME_BYTES + 5))
+        .max_frame_size(Some(MAX_INPUT_FRAME_BYTES + 5));
+    let (mut socket, _) = timeout(
+        CONNECT_TIMEOUT,
+        tokio_tungstenite::connect_async_with_config(
+            data_ws_request(config, session_id)?,
+            Some(ws_config),
+            true,
+        ),
+    )
+    .await
+    .context("data WebSocket connect timed out")?
+    .map_err(|error| match error {
+        tokio_tungstenite::tungstenite::Error::Http(response) => anyhow::anyhow!(
+            "data WebSocket rejected: HTTP {}",
+            response.status().as_u16()
+        ),
+        tokio_tungstenite::tungstenite::Error::Tls(_) => {
+            anyhow::anyhow!("data WebSocket TLS verification failed")
+        }
+        tokio_tungstenite::tungstenite::Error::Io(_) => {
+            anyhow::anyhow!("data WebSocket TCP connection failed")
+        }
+        _ => anyhow::anyhow!("data WebSocket handshake failed"),
+    })?;
+    outcome.established = true;
+    info!(%session_id, "authenticated WebSocket data stream opened");
+    let result: Result<()> = async {
+        let mut ticker = tokio::time::interval(Duration::from_secs(QUIC_KEEP_ALIVE_SECS));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut last_seen = Instant::now();
+        loop {
+            tokio::select! {
+                data = output_rx.recv() => {
+                    let Some(data) = data else { return Ok(()); };
+                    // Keep each message bounded, even if a future proxy batches output.
+                    for chunk in data.chunks(MAX_INPUT_FRAME_BYTES) {
+                        timeout(IO_TIMEOUT, socket.send(Message::Binary(chunk.to_vec().into())))
+                            .await.context("data WebSocket write timed out")?
+                            .map_err(|_| anyhow::anyhow!("data WebSocket write failed"))?;
+                    }
+                }
+                message = socket.next() => {
+                    last_seen = Instant::now();
+                    match message {
+                        Some(Ok(Message::Binary(frame))) => {
+                            let command = parse_ws_command(&frame)?;
+                            match command {
+                                ProxyCommand::ClientAttached => outcome.client_attached = true,
+                                ProxyCommand::ClientDetached => outcome.client_attached = false,
+                                _ => {},
+                            }
+                            timeout(IO_TIMEOUT, proxy_tx.send(command)).await
+                                .context("proxy command timed out")?
+                                .map_err(|_| anyhow::anyhow!("proxy closed"))?;
+                        }
+                        Some(Ok(Message::Ping(data))) => {
+                            timeout(IO_TIMEOUT, socket.send(Message::Pong(data))).await
+                                .context("data WebSocket pong timed out")?
+                                .map_err(|_| anyhow::anyhow!("data WebSocket pong failed"))?;
+                        }
+                        Some(Ok(Message::Pong(_))) => {},
+                        Some(Ok(Message::Close(_))) | None => return Ok(()),
+                        Some(Err(_)) => anyhow::bail!("data WebSocket read failed"),
+                        _ => anyhow::bail!("invalid data WebSocket message"),
+                    }
+                }
+                _ = ticker.tick() => {
+                    anyhow::ensure!(last_seen.elapsed() < Duration::from_secs(QUIC_IDLE_TIMEOUT_SECS), "data WebSocket peer timed out");
+                    timeout(IO_TIMEOUT, socket.send(Message::Ping(Vec::new().into()))).await
+                        .context("data WebSocket ping timed out")?
+                        .map_err(|_| anyhow::anyhow!("data WebSocket ping failed"))?;
+                }
+                _ = proxy_tx.closed() => return Ok(()),
+            }
+        }
+    }.await;
+    let _ = timeout(Duration::from_secs(1), socket.close(None)).await;
+    result
+}
+
+fn parse_ws_command(frame: &[u8]) -> Result<ProxyCommand> {
+    match frame.first() {
+        Some(&FRAME_INPUT) if frame.len() >= 5 => {
+            let len = u32::from_be_bytes(frame[1..5].try_into().unwrap()) as usize;
+            anyhow::ensure!(
+                len <= MAX_INPUT_FRAME_BYTES && frame.len() - 5 == len,
+                "invalid WebSocket input frame length"
+            );
+            Ok(ProxyCommand::Input(frame[5..].to_vec()))
+        }
+        Some(&FRAME_RESIZE) if frame.len() == 5 => Ok(ProxyCommand::Resize {
+            cols: u16::from_be_bytes([frame[1], frame[2]]),
+            rows: u16::from_be_bytes([frame[3], frame[4]]),
+        }),
+        Some(&FRAME_CLIENT_ATTACHED) if frame.len() == 1 => Ok(ProxyCommand::ClientAttached),
+        Some(&FRAME_CLIENT_DETACHED) if frame.len() == 1 => Ok(ProxyCommand::ClientDetached),
+        _ => anyhow::bail!("invalid WebSocket daemon command"),
+    }
 }
 
 async fn read_command_frame(recv: &mut quinn::RecvStream) -> Result<Option<ProxyCommand>> {
@@ -295,48 +555,6 @@ async fn read_exact_or_eof(recv: &mut quinn::RecvStream, buf: &mut [u8]) -> Resu
         }
     }
     Ok(true)
-}
-
-#[derive(Debug)]
-struct SkipServerVerification;
-
-impl rustls::client::danger::ServerCertVerifier for SkipServerVerification {
-    fn verify_server_cert(
-        &self,
-        _end_entity: &rustls::pki_types::CertificateDer<'_>,
-        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
-        _server_name: &rustls::pki_types::ServerName<'_>,
-        _ocsp_response: &[u8],
-        _now: rustls::pki_types::UnixTime,
-    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        Ok(rustls::client::danger::ServerCertVerified::assertion())
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        _message: &[u8],
-        _cert: &rustls::pki_types::CertificateDer<'_>,
-        _dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        _message: &[u8],
-        _cert: &rustls::pki_types::CertificateDer<'_>,
-        _dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        vec![
-            rustls::SignatureScheme::ED25519,
-            rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
-            rustls::SignatureScheme::RSA_PSS_SHA256,
-        ]
-    }
 }
 
 #[cfg(test)]
@@ -466,5 +684,266 @@ mod reconnect_tests {
             "a real attachment ending must still restore the local size, got {cmds:?}"
         );
         assert!(matches!(cmds[0], ProxyCommand::ClientDetached));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn closed_proxy_cancels_a_pending_connection() {
+        let (proxy_tx, proxy_rx) = mpsc::channel(1);
+        drop(proxy_rx);
+        timeout(
+            Duration::from_secs(1),
+            reconnect_loop("sid".into(), proxy_tx, || async {
+                futures_util::future::pending::<StreamOutcome>().await
+            }),
+        )
+        .await
+        .expect("closed proxy must stop reconnect work immediately");
+    }
+}
+
+#[cfg(test)]
+mod fallback_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    #[test]
+    fn websocket_request_keeps_bearer_out_of_the_url_and_preserves_tls() {
+        let config = DaemonConfig {
+            hub_url: "https://example.invalid/old?token=discarded#discarded".into(),
+            token: "test-only-bearer".into(),
+            ..Default::default()
+        };
+        let request = data_ws_request(&config, "sid").unwrap();
+        assert_eq!(
+            request.uri(),
+            "wss://example.invalid/ws/data/sid?role=daemon"
+        );
+        assert_eq!(
+            request.headers()["Authorization"],
+            "Bearer test-only-bearer"
+        );
+        assert!(request.headers()["Authorization"].is_sensitive());
+        assert_eq!(
+            data_url("http://localhost:3100", "sid", true)
+                .unwrap()
+                .scheme(),
+            "ws"
+        );
+        assert_eq!(
+            data_url("https://example.invalid", "sid", false)
+                .unwrap()
+                .as_str(),
+            "https://example.invalid/sessions/sid/daemon-ticket"
+        );
+        for invalid in [
+            "ftp://example.invalid",
+            "wss://example.invalid",
+            "https://user:password@example.invalid",
+        ] {
+            assert!(data_url(invalid, "sid", true).is_err());
+        }
+        assert!(
+            data_ws_request(
+                &DaemonConfig {
+                    token: "bad\r\nheader".into(),
+                    ..config
+                },
+                "sid"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn websocket_commands_match_quic_frames_and_reject_truncation_or_trailing_bytes() {
+        assert!(
+            matches!(parse_ws_command(&[0, 0, 0, 0, 2, 0, 0xff]).unwrap(), ProxyCommand::Input(data) if data == [0, 0xff])
+        );
+        assert!(matches!(
+            parse_ws_command(&[1, 0, 120, 0, 40]).unwrap(),
+            ProxyCommand::Resize {
+                cols: 120,
+                rows: 40
+            }
+        ));
+        assert!(matches!(
+            parse_ws_command(&[2]).unwrap(),
+            ProxyCommand::ClientAttached
+        ));
+        assert!(matches!(
+            parse_ws_command(&[3]).unwrap(),
+            ProxyCommand::ClientDetached
+        ));
+        for frame in [
+            &[][..],
+            &[0],
+            &[0, 0, 0, 0, 1],
+            &[0, 0, 0, 0, 0, 1],
+            &[0, 0xff, 0xff, 0xff, 0xff],
+            &[1, 0, 1, 0],
+            &[1, 0, 1, 0, 1, 0],
+            &[2, 0],
+            &[3, 0],
+            &[4],
+        ] {
+            assert!(parse_ws_command(frame).is_err());
+        }
+        let mut largest = vec![0];
+        largest.extend_from_slice(&(MAX_INPUT_FRAME_BYTES as u32).to_be_bytes());
+        largest.resize(MAX_INPUT_FRAME_BYTES + 5, 7);
+        assert!(parse_ws_command(&largest).is_ok());
+    }
+
+    async fn serve_ticket(listener: &TcpListener, status: u16) {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        while !request.ends_with(b"\r\n\r\n") {
+            request.push(socket.read_u8().await.unwrap());
+            assert!(request.len() < 8192);
+        }
+        let request = String::from_utf8(request).unwrap().to_ascii_lowercase();
+        assert!(request.starts_with("post /sessions/sid/daemon-ticket "));
+        assert!(request.contains("authorization: bearer test-only-bearer\r\n"));
+        let body = r#"{"ticket":"test-only-ticket","quic_certificate":"AQID"}"#;
+        let response = format!(
+            "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        socket.write_all(response.as_bytes()).await.unwrap();
+        socket.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn silent_udp_falls_back_with_auth_and_preserves_queued_output_and_commands() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        // A bound socket that never answers models a VPN dropping QUIC packets.
+        let silent_udp = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let config = DaemonConfig {
+            hub_url: format!("http://{}", listener.local_addr().unwrap()),
+            quic_host: "127.0.0.1".into(),
+            quic_port: silent_udp.local_addr().unwrap().port(),
+            token: "test-only-bearer".into(),
+            ..Default::default()
+        };
+        let server = tokio::spawn(async move {
+            serve_ticket(&listener, 200).await;
+            let (socket, _) = listener.accept().await.unwrap();
+            #[allow(clippy::result_large_err)] // The callback error type belongs to tungstenite.
+            let check = |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                         response| {
+                assert_eq!(request.uri(), "/ws/data/sid?role=daemon");
+                assert_eq!(
+                    request.headers()["Authorization"],
+                    "Bearer test-only-bearer"
+                );
+                Ok(response)
+            };
+            let mut socket = tokio_tungstenite::accept_hdr_async(socket, check)
+                .await
+                .unwrap();
+            loop {
+                if let Message::Binary(data) = socket.next().await.unwrap().unwrap() {
+                    assert_eq!(data.as_ref(), b"queued before connection");
+                    break;
+                }
+            }
+            for frame in [vec![2], vec![1, 0, 120, 0, 40], vec![0, 0, 0, 0, 1, b'x']] {
+                socket.send(Message::Binary(frame.into())).await.unwrap();
+            }
+            socket.send(Message::Ping(vec![42].into())).await.unwrap();
+            loop {
+                if let Message::Pong(data) = socket.next().await.unwrap().unwrap()
+                    && data.as_ref() == [42]
+                {
+                    break;
+                }
+            }
+            socket.close(None).await.unwrap();
+        });
+        let endpoint = Endpoint::client("127.0.0.1:0".parse().unwrap()).unwrap();
+        let (proxy_tx, mut proxy_rx) = mpsc::channel(8);
+        let (output_tx, mut output_rx) = mpsc::channel(8);
+        output_tx
+            .send(b"queued before connection".to_vec())
+            .await
+            .unwrap();
+        let mut outcome = StreamOutcome::default();
+        let started = Instant::now();
+        timeout(
+            Duration::from_secs(6),
+            connect_and_run_stream(
+                &endpoint,
+                &config,
+                "sid",
+                &proxy_tx,
+                &mut output_rx,
+                &mut outcome,
+            ),
+        )
+        .await
+        .expect("silent UDP must not wait for the 15s QUIC idle timeout")
+        .unwrap();
+        assert!(started.elapsed() >= QUIC_CONNECT_TIMEOUT);
+        assert!(outcome.established && outcome.client_attached);
+        assert!(matches!(
+            proxy_rx.try_recv(),
+            Ok(ProxyCommand::ClientAttached)
+        ));
+        assert!(matches!(
+            proxy_rx.try_recv(),
+            Ok(ProxyCommand::Resize {
+                cols: 120,
+                rows: 40
+            })
+        ));
+        assert!(matches!(proxy_rx.try_recv(), Ok(ProxyCommand::Input(data)) if data == b"x"));
+        timeout(Duration::from_secs(1), server)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn ticket_auth_rejection_never_attempts_websocket_or_drains_output() {
+        for status in [401, 403, 404] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let config = DaemonConfig {
+                hub_url: format!("http://{}", listener.local_addr().unwrap()),
+                token: "test-only-bearer".into(),
+                ..Default::default()
+            };
+            let server = tokio::spawn(async move {
+                serve_ticket(&listener, status).await;
+                assert!(
+                    timeout(Duration::from_millis(50), listener.accept())
+                        .await
+                        .is_err(),
+                    "auth rejection must not initiate a fallback connection"
+                );
+            });
+            let endpoint = Endpoint::client("127.0.0.1:0".parse().unwrap()).unwrap();
+            let (proxy_tx, _proxy_rx) = mpsc::channel(8);
+            let (output_tx, mut output_rx) = mpsc::channel(8);
+            output_tx.send(b"retained".to_vec()).await.unwrap();
+            let mut outcome = StreamOutcome::default();
+            let error = connect_and_run_stream(
+                &endpoint,
+                &config,
+                "sid",
+                &proxy_tx,
+                &mut output_rx,
+                &mut outcome,
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!("daemon ticket rejected: HTTP {status}")
+            );
+            assert_eq!(outcome, StreamOutcome::default());
+            assert_eq!(output_rx.try_recv().unwrap(), b"retained");
+            server.await.unwrap();
+        }
     }
 }

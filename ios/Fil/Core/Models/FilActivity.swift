@@ -8,6 +8,7 @@ actor FilActivityManager {
 
     private let logger = Logger(subsystem: "sh.fil.app", category: "LiveActivity")
     private var observationTasks: [String: [Task<Void, Never>]] = [:]
+    private var followGeneration = UUID()
 
     func follow(
         session: Session,
@@ -19,22 +20,17 @@ actor FilActivityManager {
         guard preferences.isEnabled, ActivityAuthorizationInfo().areActivitiesEnabled else {
             return false
         }
-
-        let state = projectedState(
-            session: session,
-            status: status,
-            otherSessionCount: otherSessionCount
-        )
-
-        for activity in Activity<FilActivityAttributes>.activities
-        where activity.attributes.sessionId != session.id {
-            await endActivity(activity, immediate: false)
-        }
+        let revision = FilSharedStore.activityPrivacyRevision
+        let generation = UUID()
+        followGeneration = generation
 
         if let existing = Activity<FilActivityAttributes>.activities.first(where: {
-            $0.attributes.sessionId == session.id
+            $0.attributes.sessionId == session.id && isActive($0)
+                && $0.attributes.privacyRevision == revision
         }) {
+            let state = projectedState(session: session, status: status, otherSessionCount: otherSessionCount)
             await existing.update(content(for: state))
+            guard followGeneration == generation, isActive(existing) else { return false }
             startObserving(existing)
             return true
         }
@@ -42,19 +38,31 @@ actor FilActivityManager {
         do {
             let pushUpdatesEnabled = (try? await HubClient().health().liveActivityPushEnabled)
                 ?? false
+            // An await can overlap a privacy change, logout, or another explicit follow.
+            guard !Task.isCancelled, followGeneration == generation,
+                  FilActivityPreferences.current.isEnabled,
+                  FilSharedStore.activityPrivacyRevision == revision,
+                  ActivityAuthorizationInfo().areActivitiesEnabled else { return false }
+            let state = projectedState(session: session, status: status, otherSessionCount: otherSessionCount)
             let pushType: PushType? = pushUpdatesEnabled ? .token : nil
             let activity = try Activity.request(
                 attributes: FilActivityAttributes(
                     sessionId: session.id,
                     deviceId: session.deviceId,
-                    machineName: machineName,
-                    startedAt: session.createdAt ?? Date()
+                    machineName: preferences.privacy == .private_ ? "" : String(machineName.prefix(80)),
+                    startedAt: session.createdAt ?? Date(),
+                    privacy: preferences.privacy,
+                    privacyRevision: revision
                 ),
                 content: content(for: state),
                 pushType: pushType
             )
             startObserving(activity)
-            return true
+            // Keep the previous follow if requesting the replacement failed.
+            for previous in Activity<FilActivityAttributes>.activities where previous.id != activity.id {
+                await endActivity(previous, immediate: true)
+            }
+            return followGeneration == generation && isActive(activity)
         } catch {
             logger.error("Unable to start Live Activity: \(error.localizedDescription, privacy: .public)")
             return false
@@ -63,8 +71,12 @@ actor FilActivityManager {
 
     func isFollowing(sessionId: String) -> Bool {
         Activity<FilActivityAttributes>.activities.contains {
-            $0.attributes.sessionId == sessionId
+            $0.attributes.sessionId == sessionId && isActive($0)
         }
+    }
+
+    private func isActive(_ activity: Activity<FilActivityAttributes>) -> Bool {
+        activity.activityState == .active || activity.activityState == .stale
     }
 
     func update(
@@ -75,6 +87,7 @@ actor FilActivityManager {
         otherSessionCount: Int
     ) async {
         let preferences = FilActivityPreferences.current
+        guard preferences.isEnabled else { return }
         let state = FilActivityProjection.content(
             status: status,
             cwd: cwd,
@@ -83,19 +96,21 @@ actor FilActivityManager {
             privacy: preferences.privacy
         )
         for activity in Activity<FilActivityAttributes>.activities
-        where activity.attributes.sessionId == sessionId {
+        where activity.attributes.sessionId == sessionId && isActive(activity) {
             await activity.update(content(for: state))
         }
     }
 
     func stopFollowing(sessionId: String? = nil) async {
+        followGeneration = UUID()
         for activity in Activity<FilActivityAttributes>.activities
         where sessionId == nil || activity.attributes.sessionId == sessionId {
-            await endActivity(activity, immediate: false)
+            await endActivity(activity, immediate: true)
         }
     }
 
     func endAllImmediately() async {
+        followGeneration = UUID()
         for activity in Activity<FilActivityAttributes>.activities {
             await endActivity(activity, immediate: true)
         }
@@ -142,8 +157,7 @@ actor FilActivityManager {
         let stateTask = Task { [weak self] in
             for await state in stateActivity.activityStateUpdates {
                 if state == .dismissed || state == .ended {
-                    await self?.unregister(activityId)
-                    await self?.stopObserving(activityId)
+                    await self?.activityDidEnd(activityId)
                     break
                 }
             }
@@ -155,13 +169,26 @@ actor FilActivityManager {
         observationTasks.removeValue(forKey: activityId)?.forEach { $0.cancel() }
     }
 
+    private func activityDidEnd(_ activityId: String) {
+        stopObserving(activityId)
+        enqueueUnregister(activityId)
+    }
+
+    private func enqueueUnregister(_ activityId: String) {
+        let token = TokenStorage.loadToken()
+        // Best-effort remote cleanup must outlive the view and never delay local removal.
+        Task { await unregister(activityId, token: token) }
+    }
+
     private func register(
         activityId: String,
         sessionId: String,
         deviceId: String,
         pushToken: Data
     ) async {
-        guard let token = TokenStorage.loadToken() else { return }
+        guard !Task.isCancelled,
+              Activity<FilActivityAttributes>.activities.contains(where: { $0.id == activityId && isActive($0) }),
+              let token = TokenStorage.loadToken() else { return }
         let hex = pushToken.map { String(format: "%02x", $0) }.joined()
         #if DEBUG
         let environment = "sandbox"
@@ -179,6 +206,9 @@ actor FilActivityManager {
                 ),
                 token: token
             )
+            if !Activity<FilActivityAttributes>.activities.contains(where: { $0.id == activityId && isActive($0) }) {
+                enqueueUnregister(activityId)
+            }
         } catch {
             logger.error("Unable to register Live Activity push token: \(error.localizedDescription, privacy: .public)")
         }
@@ -189,20 +219,20 @@ actor FilActivityManager {
         immediate: Bool
     ) async {
         let activityId = activity.id
-        var state = activity.content.state
-        state.status = .ended
-        state.lastUpdatedAt = Date()
-        await unregister(activityId)
+        let state = FilActivityProjection.content(
+            status: .stopped, cwd: "", shell: "", otherSessionCount: 0, privacy: .private_
+        )
+        stopObserving(activityId)
         nonisolated(unsafe) let endingActivity = activity
         await endingActivity.end(
             ActivityContent(state: state, staleDate: nil),
             dismissalPolicy: immediate ? .immediate : .after(Date().addingTimeInterval(8))
         )
-        stopObserving(activityId)
+        enqueueUnregister(activityId)
     }
 
-    private func unregister(_ activityId: String) async {
-        guard let token = TokenStorage.loadToken() else { return }
+    private func unregister(_ activityId: String, token: String?) async {
+        guard let token else { return }
         do {
             try await HubClient().deleteLiveActivity(activityId: activityId, token: token)
         } catch {

@@ -86,6 +86,7 @@ pub async fn delete_device(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
 ) -> StatusCode {
+    let _lifecycle = state.lifecycle.write().await;
     let result = sqlx::query("DELETE FROM devices WHERE id = ? AND user_id = ?")
         .bind(&device_id)
         .bind(&auth.user_id)
@@ -94,10 +95,73 @@ pub async fn delete_device(
 
     match result {
         Ok(r) if r.rows_affected() > 0 => {
+            let _admission = state.quic_router.admission.lock().await;
+            for session_id in state.sessions.remove_device(&auth.user_id, &device_id) {
+                state.tickets.revoke_session(&session_id);
+                state.quic_router.forget_session(&session_id).await;
+            }
             debug!(device_id = %device_id, "device deleted");
             StatusCode::NO_CONTENT
         }
         Ok(_) => StatusCode::NOT_FOUND,
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::quic::DaemonCommand;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn a_blocked_device_deletion_does_not_block_another_terminal() {
+        let state = crate::state::test_state().await;
+        state.sessions.register_device("sibling", "user", "sibling");
+        let access = state.sessions.device_access("sibling").unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        state
+            .quic_router
+            .register_daemon_input("sibling-session", tx)
+            .await;
+        let mut connections = Vec::new();
+        for _ in 0..5 {
+            connections.push(state.db.pool.acquire().await.unwrap());
+        }
+        let task_state = state.clone();
+        let deletion = tokio::spawn(async move {
+            delete_device(
+                AuthUser {
+                    user_id: "user".into(),
+                },
+                State(task_state),
+                Path("deleted".into()),
+            )
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while state.lifecycle.try_read().is_ok() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            state.quic_router.command_authorized(
+                "sibling-session",
+                &access,
+                &state.sessions,
+                DaemonCommand::Input(b"still-live".to_vec()),
+            ),
+        )
+        .await
+        .expect("database contention must not stall existing terminal bytes");
+        assert!(
+            matches!(rx.recv().await, Some(DaemonCommand::Input(data)) if data == b"still-live")
+        );
+        deletion.abort();
+        let _ = deletion.await;
+        drop(connections);
     }
 }

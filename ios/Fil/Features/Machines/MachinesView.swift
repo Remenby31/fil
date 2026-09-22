@@ -142,12 +142,30 @@ struct MachinesView: View {
 
     @ViewBuilder
     private func content(listStyle: SessionListStyle) -> some View {
-        if store.machines.isEmpty && !store.isLoading {
-            emptyState
-        } else if store.isLoading && store.machines.isEmpty {
+        if store.isLoading && store.machines.isEmpty {
             loadingState
+        } else if store.machines.isEmpty && (!store.isConnected || store.errorMessage != nil) {
+            ContentUnavailableView {
+                Label("Unable to load terminals", systemImage: "wifi.exclamationmark")
+            } description: {
+                Text("Your machines could not be checked. Try again when the connection is available.")
+            } actions: {
+                Button("Retry") { store.send(.refreshTapped) }
+            }
+        } else if store.machines.isEmpty {
+            emptyState
         } else if filteredMachines.isEmpty {
-            ContentUnavailableView.search(text: searchText)
+            ContentUnavailableView {
+                Label("No matching terminals", systemImage: "line.3.horizontal.decrease.circle")
+            } description: {
+                Text("Try clearing the filters or showing offline machines.")
+            } actions: {
+                Button("Show all machines") {
+                    searchText = ""
+                    sessionFilter = .all
+                    showOfflineMachines = true
+                }
+            }
         } else {
             terminalList(style: listStyle)
         }
@@ -242,7 +260,9 @@ struct MachinesView: View {
             let machineMatches = !query.isEmpty
                 && machine.displayName.localizedCaseInsensitiveContains(query)
             let shouldShowOffline = showOfflineMachines || machine.status == .online
-            guard shouldShowOffline, machineMatches || !sessions.isEmpty || query.isEmpty else {
+            let unfiltered = query.isEmpty && sessionFilter == .all
+            guard shouldShowOffline,
+                  !sessions.isEmpty || unfiltered || (machineMatches && sessionFilter == .all) else {
                 return nil
             }
             guard machine.status == .online || showOfflineMachines else { return nil }
@@ -257,6 +277,10 @@ struct MachinesView: View {
     }
 
     private var overviewText: String {
+        if sessionFilter != .all || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let count = filteredMachines.flatMap(\.activeSessions).count
+            return String(localized: "\(count) matching terminals")
+        }
         let connectedMachines = store.machines.filter { $0.status == .online }
         let terminalCount = store.machines.flatMap(\.activeSessions).count
         let terminalSummary = terminalCount == 1
@@ -353,7 +377,7 @@ struct MachinesView: View {
                 store.send(.refreshTapped)
             }
             .font(.subheadline.weight(.semibold))
-            .foregroundStyle(FilTheme.filGreen)
+            .foregroundStyle(FilTheme.filGreenText)
             .frame(minHeight: 44)
         }
         .foregroundStyle(FilTheme.warning)
@@ -374,7 +398,7 @@ struct MachinesView: View {
             Text(message)
                 .font(.footnote)
                 .foregroundStyle(FilTheme.error)
-                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
 
             Spacer()
 
