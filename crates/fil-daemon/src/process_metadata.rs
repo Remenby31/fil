@@ -1,5 +1,8 @@
+#[cfg(target_os = "macos")]
 use std::ffi::CStr;
+#[cfg(target_os = "macos")]
 use std::mem::{size_of, size_of_val, zeroed};
+#[cfg(target_os = "macos")]
 use std::os::fd::AsRawFd;
 #[cfg(target_os = "macos")]
 use std::ptr;
@@ -114,6 +117,7 @@ fn shell_basename(shell: &str) -> String {
         .to_string()
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn is_shell_name(name: &str) -> bool {
     matches!(
         name.trim_start_matches('-'),
@@ -121,6 +125,7 @@ fn is_shell_name(name: &str) -> bool {
     )
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn normalize_command(name: &str) -> String {
     let executable = name
         .split_whitespace()
