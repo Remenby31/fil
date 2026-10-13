@@ -37,7 +37,7 @@ struct FilWidgetEntry: TimelineEntry {
                     sessions: [
                         FilWidgetSessionSnapshot(
                             id: "preview-session",
-                            projectName: "cerebro-map",
+                            projectName: "my-project",
                             processName: "Codex",
                             machineName: "MacBook Pro"
                         )
