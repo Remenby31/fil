@@ -29,6 +29,10 @@ struct TerminalSessionView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let presentation: TerminalPresentation
 
+    /// Identifies this view instance to the connection registry. SwiftUI can
+    /// show the replacement before the old view disappears; see
+    /// TerminalConnectionRegistry.release(holder:).
+    @State private var viewID = UUID()
     @State private var currentFontSize: CGFloat = 14
     @State private var isKeyboardVisible = false
     @State private var isSearching = false
@@ -65,9 +69,9 @@ struct TerminalSessionView: View {
         .environment(\.colorScheme, .dark)
         .onAppear {
             currentFontSize = store.fontSize
-            store.send(.onAppear)
+            store.send(.onAppear(viewID: viewID))
         }
-        .onDisappear { store.send(.onDisappear) }
+        .onDisappear { store.send(.onDisappear(viewID: viewID)) }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) {
             updateKeyboardVisibility(true, notification: $0)
         }
@@ -1031,15 +1035,33 @@ private final class DisplayLinkProxy {
 
 /// Receives high-frequency QUIC output without invalidating the SwiftUI/TCA tree.
 /// Chunks are coalesced and fed to SwiftTerm once per main-run-loop turn.
+///
+/// Also keeps what it has rendered. The resume cursor tells the hub what the
+/// screen already holds, so the network only ever sends the delta; a SwiftTerm
+/// view that SwiftUI recreates (size-class change, background snapshots)
+/// starts empty and would stay blank. Such a view is brought back here.
 final class TerminalOutputRelay: @unchecked Sendable {
+    /// Above the hub's 64 KiB snapshot, so a local replay is never poorer.
+    static let historyLimit = 256 * 1024
+
     private let lock = NSLock()
     private weak var terminalView: SwiftTerm.TerminalView?
+    /// The view whose screen matches `history`.
+    private weak var renderedView: SwiftTerm.TerminalView?
     private var pending = Data()
+    private var history = Data()
+    private var pendingIsReplay = false
     private var flushScheduled = false
 
     func attach(_ terminalView: SwiftTerm.TerminalView) {
         let shouldSchedule = withLock {
             self.terminalView = terminalView
+            if renderedView !== terminalView {
+                // History already includes anything still pending.
+                pending = history
+                pendingIsReplay = !history.isEmpty
+                renderedView = terminalView
+            }
             guard !pending.isEmpty, !flushScheduled else { return false }
             flushScheduled = true
             return true
@@ -1061,6 +1083,7 @@ final class TerminalOutputRelay: @unchecked Sendable {
         guard !data.isEmpty else { return }
         let shouldSchedule = withLock {
             pending.append(data)
+            appendHistory(data)
             guard terminalView != nil, !flushScheduled else { return false }
             flushScheduled = true
             return true
@@ -1068,6 +1091,16 @@ final class TerminalOutputRelay: @unchecked Sendable {
         if shouldSchedule {
             scheduleFlush()
         }
+    }
+
+    /// Same cut rule as the hub's scrollback: drop the partial line at the
+    /// front, so a replay never starts inside an escape sequence.
+    private func appendHistory(_ data: Data) {
+        history.append(data)
+        guard history.count > Self.historyLimit else { return }
+        let excess = history.count - Self.historyLimit
+        let newline = history[(history.startIndex + excess)...].firstIndex(of: UInt8(ascii: "\n"))
+        history = newline.map { Data(history[($0 + 1)...]) } ?? Data()
     }
 
     private func scheduleFlush() {
@@ -1078,19 +1111,26 @@ final class TerminalOutputRelay: @unchecked Sendable {
 
     @MainActor
     private func flush() {
-        let result: (SwiftTerm.TerminalView?, Data) = withLock {
+        let result: (SwiftTerm.TerminalView?, Data, Bool) = withLock {
             guard let terminalView = self.terminalView else {
                 flushScheduled = false
-                return (nil, Data())
+                return (nil, Data(), false)
             }
             let data = pending
+            let isReplay = pendingIsReplay
             pending.removeAll(keepingCapacity: true)
+            pendingIsReplay = false
             flushScheduled = false
-            return (terminalView, data)
+            return (terminalView, data, isReplay)
         }
-        let (terminalView, data) = result
+        let (terminalView, data, isReplay) = result
 
         guard let terminalView, !data.isEmpty else { return }
+        // Replayed history holds queries (DA, kitty keyboard) the Mac terminal
+        // already answered; answering again types "65;4;1;2;6..." into the shell.
+        let delegate = terminalView.terminalDelegate
+        if isReplay { terminalView.terminalDelegate = nil }
+        defer { if isReplay { terminalView.terminalDelegate = delegate } }
         let bytes = [UInt8](data)
         if let terminal = terminalView as? FilTerminalView {
             terminal.receiveOutput(bytes[...])
