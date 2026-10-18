@@ -29,6 +29,10 @@ struct TerminalSessionView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let presentation: TerminalPresentation
 
+    /// Identifies this view instance to the connection registry. SwiftUI can
+    /// show the replacement before the old view disappears; see
+    /// TerminalConnectionRegistry.release(holder:).
+    @State private var viewID = UUID()
     @State private var currentFontSize: CGFloat = 14
     @State private var isKeyboardVisible = false
     @State private var isSearching = false
@@ -63,21 +67,11 @@ struct TerminalSessionView: View {
             }
         }
         .environment(\.colorScheme, .dark)
-        .gesture(
-            MagnifyGesture()
-                .onChanged { value in
-                    let newSize = currentFontSize * value.magnification
-                    store.send(.fontSizeChanged(newSize))
-                }
-                .onEnded { _ in
-                    currentFontSize = store.fontSize
-                }
-        )
         .onAppear {
             currentFontSize = store.fontSize
-            store.send(.onAppear)
+            store.send(.onAppear(viewID: viewID))
         }
-        .onDisappear { store.send(.onDisappear) }
+        .onDisappear { store.send(.onDisappear(viewID: viewID)) }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) {
             updateKeyboardVisibility(true, notification: $0)
         }
@@ -371,7 +365,17 @@ struct TerminalSessionView: View {
             },
             searchCommand: searchCommand,
             scrollToLatestRequest: scrollToLatestRequest,
-            onReadingHistoryChanged: { isReadingHistory = $0 }
+            onReadingHistoryChanged: { isReadingHistory = $0 },
+            onPinch: { state, scale in
+                switch state {
+                case .changed:
+                    store.send(.fontSizeChanged(currentFontSize * scale))
+                case .ended, .cancelled, .failed:
+                    currentFontSize = store.fontSize
+                default:
+                    break
+                }
+            }
         )
         .id(store.session.id)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -481,11 +485,13 @@ struct SwiftTermWrapper: UIViewRepresentable {
     var searchCommand: TerminalSearchCommand?
     var scrollToLatestRequest = 0
     var onReadingHistoryChanged: ((Bool) -> Void)?
+    var onPinch: ((UIGestureRecognizer.State, CGFloat) -> Void)?
 
     func makeUIView(context: Context) -> SwiftTerm.TerminalView {
         let font = UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
         let tv = FilTerminalView(frame: .zero, font: font)
         tv.onReadingHistoryChanged = onReadingHistoryChanged
+        tv.onPinch = onPinch
         tv.overrideUserInterfaceStyle = .dark
         tv.backgroundColor = UIColor(FilTheme.terminalBackground)
         tv.nativeForegroundColor = UIColor(FilTheme.terminalForeground)
@@ -508,6 +514,7 @@ struct SwiftTermWrapper: UIViewRepresentable {
     func updateUIView(_ uiView: SwiftTerm.TerminalView, context: Context) {
         if let terminal = uiView as? FilTerminalView {
             terminal.onReadingHistoryChanged = onReadingHistoryChanged
+            terminal.onPinch = onPinch
             if context.coordinator.lastScrollToLatestRequest != scrollToLatestRequest {
                 context.coordinator.lastScrollToLatestRequest = scrollToLatestRequest
                 terminal.scrollToLatest()
@@ -616,12 +623,115 @@ struct SwiftTermWrapper: UIViewRepresentable {
     }
 }
 
+// MARK: - Scroll Gesture
+
+/// Where a one-finger vertical drag goes. Full-screen apps (Claude Code,
+/// vim, less, tmux) run on the alternate screen, which has no local
+/// scrollback, so the drag has to become input for the application.
+enum TerminalScrollRoute: Equatable {
+    /// UIScrollView scrolls SwiftTerm's local scrollback.
+    case scrollback
+    /// The application asked for mouse reports: send wheel events.
+    case mouseWheel
+    /// Alternate screen without mouse reporting: send cursor up/down, as
+    /// xterm's alternateScroll mode and iTerm/Terminal.app do.
+    case arrowKeys
+
+    init(mouseReporting: Bool, alternateScreen: Bool) {
+        if mouseReporting {
+            self = .mouseWheel
+        } else if alternateScreen {
+            self = .arrowKeys
+        } else {
+            self = .scrollback
+        }
+    }
+
+    static func arrowKeys(lines: Int, applicationCursor: Bool) -> [UInt8] {
+        let key = switch (lines > 0, applicationCursor) {
+        case (true, true): EscapeSequences.moveUpApp
+        case (true, false): EscapeSequences.moveUpNormal
+        case (false, true): EscapeSequences.moveDownApp
+        case (false, false): EscapeSequences.moveDownNormal
+        }
+        return Array(repeating: key, count: abs(lines)).flatMap { $0 }
+    }
+}
+
+/// Turns finger travel into whole terminal lines, one line per row height so
+/// the content follows the finger. Claude Code scrolls one line per wheel
+/// event in terminals it does not special-case.
+struct TerminalLineAccumulator {
+    var lineHeight: CGFloat {
+        didSet { lineHeight = max(1, lineHeight) }
+    }
+    private(set) var remainder: CGFloat = 0
+
+    init(lineHeight: CGFloat) {
+        self.lineHeight = max(1, lineHeight)
+    }
+
+    /// `delta` > 0 means the finger moved down, revealing older content.
+    /// Returns the lines to scroll back (> 0) or forward (< 0).
+    mutating func lines(for delta: CGFloat) -> Int {
+        remainder += delta
+        let lines = Int(remainder / lineHeight)
+        remainder -= CGFloat(lines) * lineHeight
+        return lines
+    }
+
+    mutating func reset() {
+        remainder = 0
+    }
+}
+
+/// UIScrollView-style deceleration for drags that UIScrollView cannot
+/// perform itself because they become application input.
+struct TerminalScrollMomentum {
+    static let decelerationRate = UIScrollView.DecelerationRate.normal.rawValue
+    static let restingVelocity: CGFloat = 20
+
+    private(set) var velocity: CGFloat
+
+    init(velocity: CGFloat) {
+        self.velocity = velocity
+    }
+
+    var isSettled: Bool {
+        abs(velocity) < Self.restingVelocity
+    }
+
+    /// Distance travelled during `interval`, decaying velocity per ms like
+    /// UIScrollView does.
+    mutating func advance(by interval: TimeInterval) -> CGFloat {
+        guard !isSettled, interval > 0 else { return 0 }
+        let decay = pow(Self.decelerationRate, CGFloat(interval * 1000))
+        let distance = velocity * (decay - 1) / (1000 * log(Self.decelerationRate))
+        velocity *= decay
+        return distance
+    }
+}
+
 /// SwiftTerm 1.13 updates its scroller to the bottom on every output scroll.
 /// Keep the user's top visible row instead, without stopping UIKit's drag or
 /// deceleration. The dependency itself stays untouched.
+///
+/// It also owns the vertical drag: SwiftTerm turns a pan into a mouse
+/// button-1 drag as soon as the application enables mouse reporting, and the
+/// alternate screen has nothing for UIScrollView to scroll. Here a one-finger
+/// drag scrolls local history on the normal screen and becomes wheel events
+/// or arrow keys for full-screen applications, with momentum either way.
 final class FilTerminalView: SwiftTerm.TerminalView {
     private var viewportReady = false
     var onReadingHistoryChanged: ((Bool) -> Void)?
+    var onPinch: ((UIGestureRecognizer.State, CGFloat) -> Void)?
+    private(set) var applicationScrollGesture: UIPanGestureRecognizer!
+    private(set) var pinchGesture: UIPinchGestureRecognizer!
+    private var lineAccumulator = TerminalLineAccumulator(lineHeight: 1)
+    private var momentum: TerminalScrollMomentum?
+    private var momentumLink: CADisplayLink?
+    private var momentumRoute: TerminalScrollRoute?
+    private var scrollLocation: CGPoint = .zero
     private var protectingViewport = false
     private var oldestLineIndex = 0
     private var observedBuffer: SwiftTerm.Buffer?
@@ -632,20 +742,164 @@ final class FilTerminalView: SwiftTerm.TerminalView {
     override init(frame: CGRect, font: UIFont?) {
         super.init(frame: frame, font: font)
         viewportReady = true
+        setupScrollGestures()
     }
 
     override init(frame: CGRect) {
         super.init(frame: frame)
         viewportReady = true
+        setupScrollGestures()
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         viewportReady = true
+        setupScrollGestures()
     }
 
-    private var rowHeight: CGFloat {
+    var rowHeight: CGFloat {
         max(1, ceil(CTFontGetAscent(font) + CTFontGetDescent(font) + CTFontGetLeading(font)))
+    }
+
+    var scrollRoute: TerminalScrollRoute {
+        let terminal = getTerminal()
+        return TerminalScrollRoute(
+            mouseReporting: allowMouseReporting && terminal.mouseMode != .off,
+            alternateScreen: terminal.isCurrentBufferAlternate
+        )
+    }
+
+    // MARK: Gestures
+
+    private func setupScrollGestures() {
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(handleApplicationScroll(_:)))
+        pan.maximumNumberOfTouches = 1
+        addGestureRecognizer(pan)
+        applicationScrollGesture = pan
+
+        // Pinch lives here rather than as a SwiftUI gesture on an ancestor,
+        // so every terminal gesture is arbitrated by one UIKit view.
+        let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
+        addGestureRecognizer(pinch)
+        pinchGesture = pinch
+    }
+
+    override func mouseModeChanged(source: SwiftTerm.Terminal) {
+        // Deliberately not calling super: SwiftTerm would install a pan that
+        // reports a button-1 drag, which steals every scroll from Claude
+        // Code and other mouse-aware apps. Taps still send clicks.
+        if source.mouseMode == .off, momentumRoute == .mouseWheel {
+            stopMomentum()
+        }
+    }
+
+    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        if gestureRecognizer === panGestureRecognizer {
+            guard scrollRoute == .scrollback else { return false }
+        } else if gestureRecognizer === applicationScrollGesture {
+            guard scrollRoute != .scrollback, !selectionActive else { return false }
+            let velocity = applicationScrollGesture.velocity(in: self)
+            return abs(velocity.y) > abs(velocity.x)
+        } else if type(of: gestureRecognizer) == UIPanGestureRecognizer.self {
+            // SwiftTerm's selection pan (a plain UIPanGestureRecognizer) stays
+            // installed after a selection is dismissed; it must not compete
+            // with scrolling once the selection is gone.
+            guard selectionActive else { return false }
+        }
+        return super.gestureRecognizerShouldBegin(gestureRecognizer)
+    }
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        // A touch catches a flick, as in any UIScrollView.
+        stopMomentum()
+        super.touchesBegan(touches, with: event)
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil { stopMomentum() }
+    }
+
+    @objc private func handlePinch(_ gesture: UIPinchGestureRecognizer) {
+        onPinch?(gesture.state, gesture.scale)
+    }
+
+    @objc private func handleApplicationScroll(_ gesture: UIPanGestureRecognizer) {
+        switch gesture.state {
+        case .began:
+            stopMomentum()
+            lineAccumulator.reset()
+            scrollLocation = gesture.location(in: self)
+            applyApplicationScroll(gesture.translation(in: self).y, route: scrollRoute)
+            gesture.setTranslation(.zero, in: self)
+        case .changed:
+            scrollLocation = gesture.location(in: self)
+            applyApplicationScroll(gesture.translation(in: self).y, route: scrollRoute)
+            gesture.setTranslation(.zero, in: self)
+        case .ended:
+            startMomentum(velocity: gesture.velocity(in: self).y)
+        default:
+            lineAccumulator.reset()
+        }
+    }
+
+    /// Sends `distance` points of finger travel to the application as whole
+    /// lines. Positive distance reveals older content.
+    func applyApplicationScroll(_ distance: CGFloat, route: TerminalScrollRoute) {
+        let terminal = getTerminal()
+        lineAccumulator.lineHeight = rowHeight
+        let lines = max(-terminal.rows, min(terminal.rows, lineAccumulator.lines(for: distance)))
+        guard lines != 0 else { return }
+        switch route {
+        case .scrollback:
+            return
+        case .arrowKeys:
+            send(TerminalScrollRoute.arrowKeys(lines: lines, applicationCursor: terminal.applicationCursor))
+        case .mouseWheel:
+            let col = min(max(0, Int(scrollLocation.x / max(1, bounds.width) * CGFloat(terminal.cols))),
+                          terminal.cols - 1)
+            let row = min(max(0, Int((scrollLocation.y - contentOffset.y) / rowHeight)), terminal.rows - 1)
+            let flags = terminal.encodeButton(
+                button: lines > 0 ? 4 : 5, release: false, shift: false, meta: false, control: false
+            )
+            for _ in 0..<abs(lines) {
+                terminal.sendEvent(
+                    buttonFlags: flags, x: col, y: row,
+                    pixelX: Int(scrollLocation.x), pixelY: Int(scrollLocation.y - contentOffset.y)
+                )
+            }
+        }
+    }
+
+    private func startMomentum(velocity: CGFloat) {
+        let momentum = TerminalScrollMomentum(velocity: velocity)
+        guard !momentum.isSettled else {
+            lineAccumulator.reset()
+            return
+        }
+        self.momentum = momentum
+        momentumRoute = scrollRoute
+        let link = CADisplayLink(target: DisplayLinkProxy(self), selector: #selector(DisplayLinkProxy.tick(_:)))
+        link.add(to: .main, forMode: .common)
+        momentumLink = link
+    }
+
+    fileprivate func momentumTick(_ link: CADisplayLink) {
+        guard var momentum, let route = momentumRoute, route == scrollRoute else {
+            stopMomentum()
+            return
+        }
+        let distance = momentum.advance(by: link.targetTimestamp - link.timestamp)
+        self.momentum = momentum
+        applyApplicationScroll(distance, route: route)
+        if momentum.isSettled { stopMomentum() }
+    }
+
+    private func stopMomentum() {
+        momentumLink?.invalidate()
+        momentumLink = nil
+        momentum = nil
+        momentumRoute = nil
     }
 
     var isReadingHistory: Bool {
@@ -761,17 +1015,53 @@ final class FilTerminalView: SwiftTerm.TerminalView {
     }
 }
 
+/// CADisplayLink retains its target; this keeps it from retaining the view.
+@MainActor
+private final class DisplayLinkProxy {
+    private weak var view: FilTerminalView?
+
+    init(_ view: FilTerminalView) {
+        self.view = view
+    }
+
+    @objc func tick(_ link: CADisplayLink) {
+        guard let view else {
+            link.invalidate()
+            return
+        }
+        view.momentumTick(link)
+    }
+}
+
 /// Receives high-frequency QUIC output without invalidating the SwiftUI/TCA tree.
 /// Chunks are coalesced and fed to SwiftTerm once per main-run-loop turn.
+///
+/// Also keeps what it has rendered. The resume cursor tells the hub what the
+/// screen already holds, so the network only ever sends the delta; a SwiftTerm
+/// view that SwiftUI recreates (size-class change, background snapshots)
+/// starts empty and would stay blank. Such a view is brought back here.
 final class TerminalOutputRelay: @unchecked Sendable {
+    /// Above the hub's 64 KiB snapshot, so a local replay is never poorer.
+    static let historyLimit = 256 * 1024
+
     private let lock = NSLock()
     private weak var terminalView: SwiftTerm.TerminalView?
+    /// The view whose screen matches `history`.
+    private weak var renderedView: SwiftTerm.TerminalView?
     private var pending = Data()
+    private var history = Data()
+    private var pendingIsReplay = false
     private var flushScheduled = false
 
     func attach(_ terminalView: SwiftTerm.TerminalView) {
         let shouldSchedule = withLock {
             self.terminalView = terminalView
+            if renderedView !== terminalView {
+                // History already includes anything still pending.
+                pending = history
+                pendingIsReplay = !history.isEmpty
+                renderedView = terminalView
+            }
             guard !pending.isEmpty, !flushScheduled else { return false }
             flushScheduled = true
             return true
@@ -793,6 +1083,7 @@ final class TerminalOutputRelay: @unchecked Sendable {
         guard !data.isEmpty else { return }
         let shouldSchedule = withLock {
             pending.append(data)
+            appendHistory(data)
             guard terminalView != nil, !flushScheduled else { return false }
             flushScheduled = true
             return true
@@ -800,6 +1091,16 @@ final class TerminalOutputRelay: @unchecked Sendable {
         if shouldSchedule {
             scheduleFlush()
         }
+    }
+
+    /// Same cut rule as the hub's scrollback: drop the partial line at the
+    /// front, so a replay never starts inside an escape sequence.
+    private func appendHistory(_ data: Data) {
+        history.append(data)
+        guard history.count > Self.historyLimit else { return }
+        let excess = history.count - Self.historyLimit
+        let newline = history[(history.startIndex + excess)...].firstIndex(of: UInt8(ascii: "\n"))
+        history = newline.map { Data(history[($0 + 1)...]) } ?? Data()
     }
 
     private func scheduleFlush() {
@@ -810,19 +1111,26 @@ final class TerminalOutputRelay: @unchecked Sendable {
 
     @MainActor
     private func flush() {
-        let result: (SwiftTerm.TerminalView?, Data) = withLock {
+        let result: (SwiftTerm.TerminalView?, Data, Bool) = withLock {
             guard let terminalView = self.terminalView else {
                 flushScheduled = false
-                return (nil, Data())
+                return (nil, Data(), false)
             }
             let data = pending
+            let isReplay = pendingIsReplay
             pending.removeAll(keepingCapacity: true)
+            pendingIsReplay = false
             flushScheduled = false
-            return (terminalView, data)
+            return (terminalView, data, isReplay)
         }
-        let (terminalView, data) = result
+        let (terminalView, data, isReplay) = result
 
         guard let terminalView, !data.isEmpty else { return }
+        // Replayed history holds queries (DA, kitty keyboard) the Mac terminal
+        // already answered; answering again types "65;4;1;2;6..." into the shell.
+        let delegate = terminalView.terminalDelegate
+        if isReplay { terminalView.terminalDelegate = nil }
+        defer { if isReplay { terminalView.terminalDelegate = delegate } }
         let bytes = [UInt8](data)
         if let terminal = terminalView as? FilTerminalView {
             terminal.receiveOutput(bytes[...])

@@ -1,3 +1,4 @@
+use crate::agent::{self, AgentContext, AgentRelay};
 use crate::config::DaemonConfig;
 use crate::hub_quic::QuicHub;
 use crate::hub_ws;
@@ -13,17 +14,54 @@ use tokio::net::UnixListener;
 use tokio::sync::mpsc::{self, error::TrySendError};
 use tracing::{info, warn};
 
+/// One request, one reply. A client that hangs up stops the wait early; a
+/// question it asked stays answerable until it expires.
+async fn handle_agent(
+    mut reader: tokio::net::unix::OwnedReadHalf,
+    mut writer: tokio::net::unix::OwnedWriteHalf,
+    payload: &[u8],
+    peer_pid: Option<i32>,
+    agents: &AgentContext,
+) -> Result<()> {
+    let reply = match serde_json::from_slice(payload) {
+        Ok(request) => {
+            let mut probe = [0u8; 1];
+            tokio::select! {
+                reply = agent::handle(agents, request, peer_pid) => reply,
+                _ = reader.read(&mut probe) => return Ok(()),
+            }
+        }
+        Err(error) => fil_protocol::agent::AgentReply::Error {
+            message: format!("invalid request: {error}"),
+        },
+    };
+    let mut frame = Vec::new();
+    ipc::write_frame(
+        &mut frame,
+        ipc::MSG_AGENT_REPLY,
+        &serde_json::to_vec(&reply)?,
+    )?;
+    writer.write_all(&frame).await?;
+    Ok(())
+}
+
 pub async fn run(
     sock_path: &Path,
     sessions: Arc<SessionManager>,
     ws_tx: mpsc::Sender<proto::DaemonMessage>,
     quic_hub: QuicHub,
     config: DaemonConfig,
+    relay: Arc<AgentRelay>,
 ) -> Result<()> {
     let listener = UnixListener::bind(sock_path)?;
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(sock_path, std::fs::Permissions::from_mode(0o600))?;
     let quic_hub = Arc::new(quic_hub);
+    let agents = Arc::new(AgentContext {
+        relay,
+        sessions: sessions.clone(),
+        hub: ws_tx.clone(),
+    });
 
     loop {
         let (stream, _) = listener.accept().await?;
@@ -35,9 +73,10 @@ pub async fn run(
         let ws_tx = ws_tx.clone();
         let quic_hub = quic_hub.clone();
         let config = config.clone();
+        let agents = agents.clone();
 
         tokio::spawn(async move {
-            if let Err(e) = handle_proxy(stream, sessions, ws_tx, quic_hub, config).await {
+            if let Err(e) = handle_proxy(stream, sessions, ws_tx, quic_hub, config, agents).await {
                 warn!(error = %e, "proxy session ended with error");
             }
         });
@@ -50,6 +89,7 @@ async fn handle_proxy(
     ws_tx: mpsc::Sender<proto::DaemonMessage>,
     quic_hub: Arc<QuicHub>,
     _config: DaemonConfig,
+    agents: Arc<AgentContext>,
 ) -> Result<()> {
     let peer_pid = process_metadata::peer_pid(&stream);
     let (mut reader, mut writer) = stream.into_split();
@@ -64,6 +104,9 @@ async fn handle_proxy(
         }
         frame_reader.feed(&tmp[..n]);
         if let Some((msg_type, payload)) = frame_reader.try_parse_frame() {
+            if msg_type == ipc::MSG_AGENT_REQUEST {
+                return handle_agent(reader, writer, &payload, peer_pid, &agents).await;
+            }
             if let Some(ipc::ProxyMessage::Register {
                 session_id,
                 shell,
@@ -100,6 +143,7 @@ async fn handle_proxy(
         created_at: metadata.created_at,
         cols,
         rows,
+        proxy_pid: peer_pid,
     });
 
     // Notify hub via WebSocket

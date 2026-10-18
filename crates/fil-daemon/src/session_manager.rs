@@ -9,6 +9,8 @@ pub struct ProxySession {
     pub created_at: i64,
     pub cols: u32,
     pub rows: u32,
+    /// The fil proxy process, used to map an agent's process tree to a session.
+    pub proxy_pid: Option<i32>,
 }
 
 pub enum ProxyCommand {
@@ -70,6 +72,21 @@ impl SessionManager {
         }
     }
 
+    pub fn contains(&self, session_id: &str) -> bool {
+        self.sessions.read().unwrap().contains_key(session_id)
+    }
+
+    /// The first pid in `pids` (nearest ancestor first) that is a fil proxy.
+    pub fn session_for_proxy_pids(&self, pids: &[i32]) -> Option<String> {
+        let sessions = self.sessions.read().unwrap();
+        pids.iter().find_map(|pid| {
+            sessions
+                .values()
+                .find(|session| session.proxy_pid == Some(*pid))
+                .map(|session| session.session_id.clone())
+        })
+    }
+
     pub fn all_session_infos(&self) -> Vec<fil_protocol::proto::SessionInfo> {
         let sessions = self.sessions.read().unwrap();
         let mut infos: Vec<_> = sessions
@@ -97,6 +114,32 @@ impl SessionManager {
 #[cfg(test)]
 mod security_tests {
     use super::*;
+
+    #[test]
+    fn nearest_proxy_ancestor_wins() {
+        let manager = SessionManager::new();
+        for (id, pid) in [("outer", 10), ("inner", 20)] {
+            manager.add(ProxySession {
+                session_id: id.into(),
+                shell: "zsh".into(),
+                command: "zsh".into(),
+                cwd: "/".into(),
+                created_at: 0,
+                cols: 80,
+                rows: 24,
+                proxy_pid: Some(pid),
+            });
+        }
+        assert_eq!(
+            manager
+                .session_for_proxy_pids(&[99, 21, 20, 11, 10])
+                .as_deref(),
+            Some("inner")
+        );
+        assert_eq!(manager.session_for_proxy_pids(&[99, 1]), None);
+        assert!(manager.contains("outer"));
+        assert!(!manager.contains("gone"));
+    }
 
     #[test]
     fn command_diagnostics_do_not_disclose_terminal_input() {

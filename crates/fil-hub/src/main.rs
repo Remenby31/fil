@@ -1,3 +1,4 @@
+mod agent;
 mod apns;
 mod auth;
 mod client_ws;
@@ -107,6 +108,12 @@ async fn main() -> anyhow::Result<()> {
             post(routes::create_session_ticket),
         )
         .route("/sessions/{session_id}/daemon-ticket", post(routes::create_daemon_ticket))
+        .route("/push-tokens", post(routes::register_push_token))
+        .route("/push-tokens/{token}", delete(routes::delete_push_token))
+        .route(
+            "/agent-notifications/{notification_id}/answer",
+            post(routes::answer_agent_notification),
+        )
         .route("/live-activities", post(routes::register_live_activity))
         .route(
             "/live-activities/{activity_id}",

@@ -12,5 +12,6 @@ pub async fn health_check(State(state): State<AppState>) -> Json<Value> {
         "build": option_env!("FIL_BUILD_REVISION").unwrap_or("development"),
         "authenticated_quic": state.config.require_attach_ticket,
         "live_activity_push_enabled": state.apns.is_enabled(),
+        "agent_notifications": state.apns.is_enabled(),
     }))
 }

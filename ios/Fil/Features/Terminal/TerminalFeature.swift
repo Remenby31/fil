@@ -26,6 +26,9 @@ struct TerminalFeature {
         var machineName: String
         var otherSessionCount: Int
         var availableSessions: [TerminalSessionContext]
+        /// View instances currently showing this terminal. Usually one; two
+        /// while SwiftUI swaps the view on a size-class change.
+        var visibleViewIDs: [UUID] = []
 
         init(
             session: Session,
@@ -44,8 +47,8 @@ struct TerminalFeature {
     }
 
     enum Action: Equatable {
-        case onAppear
-        case onDisappear
+        case onAppear(viewID: UUID)
+        case onDisappear(viewID: UUID)
         case connectionStateChanged(sessionId: String, state: TerminalConnectionState)
         case inputSent(Data)
         case dismiss
@@ -69,22 +72,26 @@ struct TerminalFeature {
     var body: some ReducerOf<Self> {
         Reduce { state, action in
             switch action {
-            case .onAppear:
-                let session = state.session
-                let sessionId = session.id
-                let hubHost = Self.quicHost()
+            case .onAppear(let viewID):
+                if !state.visibleViewIDs.contains(viewID) { state.visibleViewIDs.append(viewID) }
+                return open(&state, for: [viewID])
 
+            case .onDisappear(let viewID):
+                // Release, never close: when SwiftUI recreates this view (a
+                // size-class change does), the replacement's onAppear can come
+                // first, and closing here killed the session it had just
+                // opened. The registry closes once the last view has gone.
+                state.visibleViewIDs.removeAll { $0 == viewID }
+                terminalClient.release(viewID)
+                guard state.visibleViewIDs.isEmpty else { return .none }
+                state.followRevision &+= 1
+                state.isFollowRequestInFlight = false
                 return .merge(
-                    refreshFollowingStatus(&state),
-                    .run { send in
-                        for await connectionState in terminalClient.open(sessionId, hubHost) {
-                            await send(.connectionStateChanged(sessionId: sessionId, state: connectionState))
-                        }
-                    }
-                    .cancellable(id: CancelID.quic, cancelInFlight: true)
+                    .cancel(id: CancelID.quic),
+                    .cancel(id: CancelID.followStatus)
                 )
 
-            case .onDisappear, .dismiss:
+            case .dismiss:
                 let sessionId = state.session.id
                 // Close synchronously so a delayed effect cannot close a
                 // replacement opened by a rapid disappear/appear sequence.
@@ -255,7 +262,26 @@ struct TerminalFeature {
         return .concatenate(
             .cancel(id: CancelID.quic),
             .cancel(id: CancelID.followStatus),
-            .send(.onAppear)
+            open(&state, for: state.visibleViewIDs)
+        )
+    }
+
+    /// Every visible view holds the session; one subscription feeds the
+    /// store they share, so a newer one replaces the older.
+    private func open(_ state: inout State, for viewIDs: [UUID]) -> Effect<Action> {
+        let sessionId = state.session.id
+        let hubHost = Self.quicHost()
+        guard let stream = viewIDs.map({ terminalClient.open(sessionId, hubHost, $0) }).last else {
+            return .none
+        }
+        return .merge(
+            refreshFollowingStatus(&state),
+            .run { send in
+                for await connectionState in stream {
+                    await send(.connectionStateChanged(sessionId: sessionId, state: connectionState))
+                }
+            }
+            .cancellable(id: CancelID.quic, cancelInFlight: true)
         )
     }
 
@@ -272,7 +298,8 @@ struct TerminalFeature {
 }
 
 struct TerminalClientDependency: Sendable {
-    var open: @Sendable (_ sessionId: String, _ hubHost: String) -> AsyncStream<TerminalConnectionState>
+    var open: @Sendable (_ sessionId: String, _ hubHost: String, _ holder: UUID) -> AsyncStream<TerminalConnectionState>
+    var release: @Sendable (_ holder: UUID) -> Void
     var close: @Sendable (_ sessionId: String) -> Void
     var reconnect: @Sendable (_ sessionId: String) -> Void
     var sendInput: @Sendable (_ sessionId: String, _ data: Data) -> Void
@@ -281,8 +308,11 @@ struct TerminalClientDependency: Sendable {
 
 extension TerminalClientDependency: DependencyKey {
     static let liveValue = TerminalClientDependency(
-        open: { sessionId, hubHost in
-            TerminalConnectionRegistry.shared.open(sessionId: sessionId, hubHost: hubHost)
+        open: { sessionId, hubHost, holder in
+            TerminalConnectionRegistry.shared.open(sessionId: sessionId, hubHost: hubHost, holder: holder)
+        },
+        release: { holder in
+            TerminalConnectionRegistry.shared.release(holder: holder)
         },
         close: { sessionId in
             TerminalConnectionRegistry.shared.close(sessionId: sessionId)
@@ -299,7 +329,8 @@ extension TerminalClientDependency: DependencyKey {
     )
 
     static let testValue = TerminalClientDependency(
-        open: { _, _ in AsyncStream { $0.finish() } },
+        open: { _, _, _ in AsyncStream { $0.finish() } },
+        release: { _ in },
         close: { _ in },
         reconnect: { _ in },
         sendInput: { _, _ in },
@@ -308,8 +339,8 @@ extension TerminalClientDependency: DependencyKey {
 }
 
 /// Owns `TerminalSession`s. Sessions are created on first use and destroyed
-/// only by an explicit `close` — never by a view disappearing or a TCA effect
-/// being cancelled.
+/// by `close`, or when the last view holding them is released — never by a
+/// TCA effect being cancelled.
 final class TerminalConnectionRegistry: @unchecked Sendable {
     static let shared = live()
 
@@ -339,6 +370,17 @@ final class TerminalConnectionRegistry: @unchecked Sendable {
     private let lock = NSRecursiveLock()
     private var sessions: [String: TerminalSession] = [:]
     private var hubHosts: [String: String] = [:]
+    /// View instance -> the session it shows. Views release rather than
+    /// close, so an old view disappearing after its replacement appeared
+    /// cannot tear down the session the replacement is using.
+    private var holders: [UUID: String] = [:]
+    /// Unheld sessions waiting out `releaseGrace`, keyed to the release that
+    /// scheduled them so a later open cancels it.
+    private var pendingCloses: [String: UUID] = [:]
+    /// The old view can also disappear *before* its replacement appears. Without
+    /// a grace the session closed and the new view cold-attached: slower, and
+    /// the network snapshot answers stale terminal queries into the shell.
+    private let releaseGrace: TimeInterval
     private let pathMonitor = NWPathMonitor()
     private var isMonitoringPath = false
     private var isBackgrounded = false
@@ -352,6 +394,7 @@ final class TerminalConnectionRegistry: @unchecked Sendable {
 
     init(
         monitorsNetwork: Bool = true,
+        releaseGrace: TimeInterval = 1,
         makeTransport: @escaping @Sendable (String, String) -> TerminalTransport = { _, host in
             QUICTerminalClient(hubHost: host)
         },
@@ -363,6 +406,7 @@ final class TerminalConnectionRegistry: @unchecked Sendable {
         }
     ) {
         self.monitorsNetwork = monitorsNetwork
+        self.releaseGrace = releaseGrace
         self.makeTransport = makeTransport
         if let makeHostFallbackTransport {
             self.makeFallbackTransport = makeHostFallbackTransport
@@ -421,13 +465,42 @@ final class TerminalConnectionRegistry: @unchecked Sendable {
     /// Subscribe to a session's state, connecting it if it is not already up.
     /// Idempotent: repeated calls attach another subscriber to the same live
     /// connection instead of tearing it down and rebuilding it.
-    func open(sessionId: String, hubHost: String) -> AsyncStream<TerminalConnectionState> {
+    func open(sessionId: String, hubHost: String, holder: UUID? = nil) -> AsyncStream<TerminalConnectionState> {
         lock.filWithLock {
+            // A view re-pointed at another session (split view) lets go of the old one.
+            if let holder, let previous = holders[holder], previous != sessionId {
+                release(holder: holder)
+            }
+            if let holder { holders[holder] = sessionId }
+            pendingCloses.removeValue(forKey: sessionId)
             let session = session(sessionId: sessionId, hubHost: hubHost)
             let stream = session.subscribe()
             session.connectIfNeeded()
             startPathMonitoringIfNeeded()
             return stream
+        }
+    }
+
+    /// A view has gone. Closes its session once no view has shown it for
+    /// `releaseGrace`; an unknown holder (already closed, or a stale view) is
+    /// a no-op.
+    func release(holder: UUID) {
+        lock.filWithLock {
+            guard let sessionId = holders.removeValue(forKey: holder),
+                  !holders.values.contains(sessionId) else { return }
+            guard releaseGrace > 0 else { close(sessionId: sessionId); return }
+            let token = UUID()
+            pendingCloses[sessionId] = token
+            DispatchQueue.global().asyncAfter(deadline: .now() + releaseGrace) { [weak self] in
+                self?.closeIfStillUnheld(sessionId: sessionId, token: token)
+            }
+        }
+    }
+
+    private func closeIfStillUnheld(sessionId: String, token: UUID) {
+        lock.filWithLock {
+            guard pendingCloses[sessionId] == token, !holders.values.contains(sessionId) else { return }
+            close(sessionId: sessionId)
         }
     }
 
@@ -478,10 +551,12 @@ final class TerminalConnectionRegistry: @unchecked Sendable {
         lock.filWithLock { sessions[sessionId] }?.reconnectNow()
     }
 
-    /// The only teardown path.
+    /// Every teardown ends here: dismiss, session switch, last view released.
     func close(sessionId: String) {
         lock.filWithLock {
             hubHosts.removeValue(forKey: sessionId)
+            holders = holders.filter { $0.value != sessionId }
+            pendingCloses.removeValue(forKey: sessionId)
             sessions.removeValue(forKey: sessionId)?.shutdown()
         }
     }
@@ -510,6 +585,8 @@ final class TerminalConnectionRegistry: @unchecked Sendable {
             let s = sessions
             sessions.removeAll()
             hubHosts.removeAll()
+            holders.removeAll()
+            pendingCloses.removeAll()
             return s
         }
         for (_, session) in all {

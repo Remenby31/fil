@@ -30,7 +30,7 @@ Mac (Ghostty/kitty/any terminal)
 
 - **Real-time session access** from iPhone
 - **Multi-machine** — all your Macs, one hub
-- **Smart notifications** — build finished, prompt waiting, errors
+- **Agent notifications** — Claude Code, Codex & co. ping your phone when done, and ask you questions you answer from the notification
 - **Dynamic Island** — long-running processes on your lock screen
 - **Encrypted in transit** — authenticated QUIC with certificate pinning, with HTTPS/WebSocket fallback. The trusted hub relays plaintext and keeps a bounded in-memory replay buffer; this is not end-to-end encryption.
 - **Self-hostable** — one Docker command, your data stays yours
@@ -72,6 +72,47 @@ ActivityKit updates continue locally without APNs. To keep Live Activities curre
 ```
 
 Never commit or bake the `.p8` key into the image. `APNS_PRIVATE_KEY` is also supported for secret managers that inject multiline environment values.
+
+The same key sends agent notifications (below); without it the hub reports
+`agent_notifications: false` in `/health` and agents get a clear error.
+
+## Agent notifications
+
+`fil mcp` is a small local MCP server that lets coding agents reach your
+phone. It exposes three tools:
+
+- **`notify`** — a push notification; tapping it opens the agent's terminal.
+- **`ask`** — a question with 2-4 options, answered from the notification
+  buttons or in the app. The answer comes back as the tool result.
+- **`get_answer`** — collects an answer for clients that cut tool calls short.
+
+```bash
+fil mcp install --dry-run   # show what would change
+fil mcp install             # register with every agent found on this Mac
+fil mcp test                # send yourself a test notification
+fil mcp status              # daemon reachability + per-agent state
+fil mcp uninstall
+```
+
+`install` detects Claude Code, Codex CLI, Cursor, Gemini CLI, opencode,
+VS Code (Copilot), Claude Desktop, Windsurf and Mistral Vibe (`--agent <id>`
+picks some). It only touches the `fil` entry, keeps key order, leaves a
+`.fil-backup` next to the first file it edits, is idempotent, and prints a
+snippet instead of rewriting a file that contains comments. Claude Code is
+configured through `claude mcp add --scope user`.
+
+No configuration is needed per terminal: the fil proxy exports
+`FIL_SESSION_ID`, and the daemon also matches the agent's process tree to its
+terminal. Agents started outside a Fil terminal still notify; the
+notification then opens the app.
+
+Questions stay answerable for 10 minutes (`timeout_seconds`, up to 1 hour).
+Codex, Gemini and Vibe get a longer tool timeout from `install`; Cursor,
+Claude Desktop, VS Code, Windsurf and opencode stop tool calls after about a
+minute, so there `ask` returns "pending" after 45 seconds (`FIL_ASK_WAIT`) and
+the agent follows up with `get_answer`. Notification text goes through your
+hub and Apple's push service like Live Activity updates do. The hub allows
+20 notifications per minute per account.
 
 ### Development
 

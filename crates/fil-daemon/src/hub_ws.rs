@@ -1,3 +1,4 @@
+use crate::agent::AgentRelay;
 use crate::config::DaemonConfig;
 use crate::session_manager::SessionManager;
 use anyhow::{Context, Result};
@@ -14,6 +15,7 @@ use url::Url;
 pub async fn start(
     config: DaemonConfig,
     sessions: Arc<SessionManager>,
+    relay: Arc<AgentRelay>,
 ) -> mpsc::Sender<proto::DaemonMessage> {
     let (tx, rx) = mpsc::channel::<proto::DaemonMessage>(512);
 
@@ -22,7 +24,7 @@ pub async fn start(
 
     // WebSocket connection task (with reconnection)
     tokio::spawn(async move {
-        run_ws_loop(config, rx).await;
+        run_ws_loop(config, rx, relay).await;
     });
 
     // Aggregated heartbeat task
@@ -46,7 +48,11 @@ pub async fn start(
 /// in the app for half a minute after a brief network hiccup.
 const MAX_BACKOFF_SECS: u64 = 5;
 
-async fn run_ws_loop(config: DaemonConfig, mut outgoing: mpsc::Receiver<proto::DaemonMessage>) {
+async fn run_ws_loop(
+    config: DaemonConfig,
+    mut outgoing: mpsc::Receiver<proto::DaemonMessage>,
+    relay: Arc<AgentRelay>,
+) {
     let mut backoff = 1u64;
 
     loop {
@@ -54,6 +60,7 @@ async fn run_ws_loop(config: DaemonConfig, mut outgoing: mpsc::Receiver<proto::D
             Ok((mut ws_sender, mut ws_receiver)) => {
                 info!("WebSocket connected to hub");
                 backoff = 1;
+                relay.set_hub_connected(true);
 
                 let connected = async {
                     loop {
@@ -68,8 +75,10 @@ async fn run_ws_loop(config: DaemonConfig, mut outgoing: mpsc::Receiver<proto::D
                             }
                             msg = ws_receiver.next() => {
                                 match msg {
-                                    Some(Ok(Message::Binary(_data))) => {
-                                        // Hub messages handled here if needed
+                                    Some(Ok(Message::Binary(data))) => {
+                                        if let Ok(message) = proto::HubMessage::decode(data.as_ref()) {
+                                            relay.on_hub_message(message);
+                                        }
                                     }
                                     Some(Ok(Message::Close(_))) | None => return,
                                     Some(Err(e)) => {
@@ -84,6 +93,7 @@ async fn run_ws_loop(config: DaemonConfig, mut outgoing: mpsc::Receiver<proto::D
                 };
 
                 connected.await;
+                relay.set_hub_connected(false);
                 warn!("WebSocket disconnected, reconnecting...");
             }
             Err(e) => {

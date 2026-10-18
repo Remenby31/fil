@@ -20,6 +20,7 @@ pub async fn delete_account(auth: AuthUser, State(state): State<AppState>) -> St
                 }
             }
             state.sessions.remove_user(&auth.user_id);
+            state.agent.remove_user(&auth.user_id);
             info!(user_id = %auth.user_id, "account deleted");
             StatusCode::NO_CONTENT
         }
@@ -41,6 +42,10 @@ async fn delete_account_data(state: &AppState, user_id: &str) -> anyhow::Result<
     .await?;
 
     sqlx::query("DELETE FROM live_activities WHERE user_id = ?")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM push_tokens WHERE user_id = ?")
         .bind(user_id)
         .execute(&mut *tx)
         .await?;
@@ -137,10 +142,23 @@ mod tests {
         .execute(&state.db.pool)
         .await
         .unwrap();
+        sqlx::query(
+            "INSERT INTO push_tokens (token, user_id, environment) VALUES ('push-1', ?, 'sandbox')",
+        )
+        .bind(user_id)
+        .execute(&state.db.pool)
+        .await
+        .unwrap();
 
         assert!(delete_account_data(&state, user_id).await.unwrap());
 
-        for table in ["users", "user_links", "devices", "live_activities"] {
+        for table in [
+            "users",
+            "user_links",
+            "devices",
+            "live_activities",
+            "push_tokens",
+        ] {
             let count = sqlx::query_scalar::<_, i64>(&format!("SELECT COUNT(*) FROM {table}"))
                 .fetch_one(&state.db.pool)
                 .await

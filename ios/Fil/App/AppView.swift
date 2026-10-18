@@ -38,6 +38,11 @@ struct AppView: View {
         .task {
             await migrateLegacyLiveActivitiesIfNeeded()
         }
+        .task(id: isShowingMainApp && !showOnboarding) {
+            // After sign-in and onboarding, so the permission prompt has context.
+            guard isShowingMainApp, !showOnboarding else { return }
+            await AgentNotifications.shared.activate()
+        }
     }
 
     private var isShowingMainApp: Bool {

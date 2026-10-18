@@ -105,6 +105,23 @@ pub async fn run(pool: &SqlitePool) -> Result<()> {
     .await?;
     debug!("table 'live_activities' ready");
 
+    // App push tokens for agent notifications. Additive: older hubs ignore it.
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS push_tokens (
+            token TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            environment TEXT NOT NULL CHECK(environment IN ('sandbox', 'production')),
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_push_tokens_user_id ON push_tokens(user_id)")
+        .execute(pool)
+        .await?;
+    debug!("table 'push_tokens' ready");
+
     Ok(())
 }
 

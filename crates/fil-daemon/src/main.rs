@@ -1,3 +1,4 @@
+mod agent;
 mod config;
 mod hub_quic;
 mod hub_ws;
@@ -54,7 +55,8 @@ async fn main() -> Result<()> {
     let session_manager = Arc::new(SessionManager::new());
 
     // Start hub connections (WebSocket + QUIC)
-    let ws_tx = hub_ws::start(config.clone(), session_manager.clone()).await;
+    let agent_relay = agent::AgentRelay::new();
+    let ws_tx = hub_ws::start(config.clone(), session_manager.clone(), agent_relay.clone()).await;
     let quic_endpoint = hub_quic::start(config.clone()).await?;
 
     // Start IPC server (accepts proxy connections)
@@ -71,6 +73,7 @@ async fn main() -> Result<()> {
         ws_tx,
         quic_endpoint,
         config,
+        agent_relay,
     )
     .await;
 

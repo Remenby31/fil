@@ -87,6 +87,7 @@ struct AppFeature {
         }
         // These must finish before removing Machines and its effect lifetime.
         TerminalConnectionRegistry.shared.removeAllSessions()
+        AgentNotifications.unregisterBeforeLogout()
         TokenStorage.clearToken()
         FilSharedStore.clearWidgetSnapshot()
         var auth = AuthFeature.State()
