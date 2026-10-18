@@ -419,7 +419,7 @@ fn tool_result(reply: anyhow::Result<AgentReply>) -> Value {
             let mut text = match delivered {
                 Some(1) => "Notification sent to the user's phone.".to_string(),
                 Some(n) => format!("Notification sent to {n} devices."),
-                None => "Notification sent.".to_string(),
+                None => "Notification queued: this Mac is offline from the Fil hub and will send it when it reconnects.".to_string(),
             };
             if session_id.is_none() {
                 text.push_str(
@@ -487,7 +487,7 @@ pub async fn send_test_notification() -> anyhow::Result<std::process::ExitCode> 
         Ok(AgentReply::Sent { delivered, .. }) => {
             match delivered {
                 Some(n) => println!("  \x1b[32m✓\x1b[0m Sent to {n} device(s)"),
-                None => println!("  \x1b[32m✓\x1b[0m Sent"),
+                None => println!("  \x1b[33m~\x1b[0m Queued: the daemon is offline from the hub"),
             }
             Ok(std::process::ExitCode::SUCCESS)
         }

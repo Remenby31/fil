@@ -224,7 +224,8 @@ pub async fn handle(
     }
 }
 
-/// Returns how many phones were notified, or `None` when the hub did not say.
+/// Returns how many phones were notified, or `None` when the hub is offline
+/// and the notification waits in the queue.
 async fn deliver(
     ctx: &AgentContext,
     notification: proto::AgentNotification,
@@ -252,10 +253,15 @@ async fn deliver(
         Ok(Ok(ack)) => Ok(Some(ack.delivered)),
         _ => {
             ctx.relay.acks.lock().unwrap().remove(&id);
-            if !ctx.relay.hub_connected.load(Ordering::Relaxed) {
-                // Still queued: the control socket sends it after reconnecting.
-                warn!(%id, "hub offline; notification queued");
+            if ctx.relay.hub_connected.load(Ordering::Relaxed) {
+                // A connected hub that never answers predates this feature.
+                return Err(
+                    "the Fil hub did not confirm delivery; it may be too old for agent notifications"
+                        .into(),
+                );
             }
+            // Still queued: the control socket sends it after reconnecting.
+            warn!(%id, "hub offline; notification queued");
             Ok(None)
         }
     }
@@ -361,6 +367,29 @@ mod tests {
             Some(proto::daemon_message::Payload::AgentNotification(n)) => n,
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn silent_hub_is_reported_unless_offline() {
+        let (ctx, mut rx) = context();
+        let notify = || AgentRequest::Notify {
+            title: "Done".into(),
+            message: String::new(),
+            session_hint: None,
+        };
+        ctx.relay.set_hub_connected(true);
+        let reply = handle(&ctx, notify(), None).await;
+        assert!(matches!(reply, AgentReply::Error { ref message } if message.contains("too old")));
+        ctx.relay.set_hub_connected(false);
+        let reply = handle(&ctx, notify(), None).await;
+        assert_eq!(
+            reply,
+            AgentReply::Sent {
+                session_id: None,
+                delivered: None
+            }
+        );
+        assert!(rx.try_recv().is_ok() && rx.try_recv().is_ok());
     }
 
     #[test]
