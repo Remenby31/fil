@@ -6,6 +6,8 @@ pub struct ApnsConfig {
     pub key_id: String,
     pub private_key: String,
     pub topic: String,
+    /// Loopback-only override for local smoke tests against a mock APNs.
+    pub endpoint: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -111,11 +113,21 @@ fn apns_from_env() -> Option<ApnsConfig> {
             }
         }
     };
+    let endpoint = nonempty_env("APNS_ENDPOINT").filter(|endpoint| {
+        let loopback = ["http://127.0.0.1:", "http://localhost:", "http://[::1]:"]
+            .iter()
+            .any(|prefix| endpoint.starts_with(prefix));
+        if !loopback {
+            tracing::warn!("ignoring APNS_ENDPOINT: only loopback mock servers are allowed");
+        }
+        loopback
+    });
     Some(ApnsConfig {
         team_id,
         key_id,
         private_key,
         topic,
+        endpoint,
     })
 }
 

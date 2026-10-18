@@ -89,6 +89,35 @@ message SessionStateUpdate {
     SessionInfo info = 4;
 }
 
+// Agent notifications (fil mcp → daemon → hub → APNs)
+//
+// `options` is empty for a plain notification and holds 2-4 choices for a
+// question. Older hubs ignore these fields; older daemons ignore the replies.
+message AgentNotification {
+    string notification_id = 1;
+    string session_id = 2;   // empty when the agent's terminal is unknown
+    string title = 3;
+    string body = 4;
+    repeated string options = 5;
+    int64 expires_at = 6;    // unix seconds; 0 for a plain notification
+}
+
+// The daemon stopped waiting for an answer (timeout or agent went away).
+message AgentAskClosed {
+    string notification_id = 1;
+}
+
+message AgentNotificationAck {
+    string notification_id = 1;
+    uint32 delivered = 2;    // phones APNs accepted the push for
+    string error = 3;        // non-empty when nothing could be delivered
+}
+
+message AgentAnswer {
+    string notification_id = 1;
+    string answer = 2;
+}
+
 // Top-level message envelope
 message DaemonMessage {
     oneof payload {
@@ -98,6 +127,8 @@ message DaemonMessage {
         SessionData session_data = 4;
         SessionResize session_resize = 5;
         Heartbeat heartbeat = 6;
+        AgentNotification agent_notification = 7;
+        AgentAskClosed agent_ask_closed = 8;
     }
 }
 
@@ -108,5 +139,7 @@ message HubMessage {
         SessionInput session_input = 3;
         SessionData session_data = 4;
         HeartbeatAck heartbeat_ack = 5;
+        AgentNotificationAck agent_notification_ack = 6;
+        AgentAnswer agent_answer = 7;
     }
 }

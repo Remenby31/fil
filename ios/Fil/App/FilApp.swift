@@ -13,6 +13,7 @@ struct FilApp: App {
         }
     }()
 
+    @UIApplicationDelegateAdaptor(FilAppDelegate.self) private var appDelegate
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {

@@ -60,6 +60,7 @@ main() {
         echo "    \033[32m$\033[0m fil setup --hub https://YOUR_HUB_URL"
         echo "    \033[32m$\033[0m fil"
         echo ""
+        offer_agent_notifications "${INSTALL_DIR}/fil"
     else
         rm -rf "${TMPDIR}"
 
@@ -72,6 +73,26 @@ main() {
             error "Download failed and Homebrew not found. Install manually from https://github.com/${REPO}"
         fi
     fi
+}
+
+# Opt-in: FIL_INSTALL_MCP=1 answers yes, FIL_INSTALL_MCP=0 skips the question.
+# `curl | sh` has no stdin, so the prompt reads from the terminal directly.
+offer_agent_notifications() {
+    fil_bin="$1"
+    case "${FIL_INSTALL_MCP:-}" in
+        1|yes|true) answer=y ;;
+        0|no|false) return 0 ;;
+        *)
+            [ -r /dev/tty ] || return 0
+            printf "  Let coding agents (Claude Code, Codex, Cursor...) notify your phone? [y/N] "
+            read -r answer < /dev/tty || answer=n
+            ;;
+    esac
+    case "$answer" in
+        y|Y|yes|YES) "$fil_bin" mcp install || true ;;
+        *) echo "  Later: \033[32m$\033[0m fil mcp install" ;;
+    esac
+    echo ""
 }
 
 error() {

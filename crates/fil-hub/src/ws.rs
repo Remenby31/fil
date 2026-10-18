@@ -78,6 +78,8 @@ async fn handle_socket(
         .sessions
         .device_access(&device_id)
         .expect("registered device has access");
+    let (agent_tx, mut agent_rx) = tokio::sync::mpsc::channel::<proto::HubMessage>(32);
+    let agent_connection = state.agent.attach_daemon(&device_id, agent_tx);
     drop(admission);
     drop(lifecycle);
     info!(device_id = %device_id, "device connected");
@@ -87,7 +89,10 @@ async fn handle_socket(
         sqlx::query("UPDATE devices SET last_seen = datetime('now') WHERE id = ?").bind(&device_id);
     tokio::select! {
         biased;
-        _ = access.cancelled() => return,
+        _ = access.cancelled() => {
+            state.agent.detach_daemon(&device_id, agent_connection);
+            return;
+        }
         _ = tokio::time::timeout(std::time::Duration::from_secs(5), update.execute(&state.db.pool)) => {},
     }
 
@@ -96,6 +101,20 @@ async fn handle_socket(
         let msg = tokio::select! {
             biased;
             _ = access.cancelled() => break,
+            Some(outgoing) = agent_rx.recv() => {
+                let mut buf = Vec::new();
+                if outgoing.encode(&mut buf).is_err() {
+                    continue;
+                }
+                let sent = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    sender.send(Message::Binary(buf.into())),
+                ).await;
+                if !matches!(sent, Ok(Ok(()))) {
+                    break;
+                }
+                continue;
+            }
             msg = receiver.next() => match msg { Some(msg) => msg, None => break },
         };
         match msg {
@@ -131,6 +150,7 @@ async fn handle_socket(
     }
 
     // Mark device as disconnected
+    state.agent.detach_daemon(&device_id, agent_connection);
     state.sessions.set_device_connected(&device_id, false);
     info!(device_id = %device_id, "device disconnected");
 }
@@ -138,7 +158,7 @@ async fn handle_socket(
 async fn handle_daemon_message(
     msg: &proto::DaemonMessage,
     device_id: &str,
-    _user_id: &str,
+    user_id: &str,
     state: &AppState,
 ) {
     let Some(payload) = &msg.payload else {
@@ -225,6 +245,17 @@ async fn handle_daemon_message(
                 rows = resize.rows,
                 "session resized"
             );
+        }
+        proto::daemon_message::Payload::AgentNotification(notification) => {
+            tokio::spawn(crate::agent::handle_notification(
+                state.clone(),
+                device_id.to_string(),
+                user_id.to_string(),
+                notification.clone(),
+            ));
+        }
+        proto::daemon_message::Payload::AgentAskClosed(closed) => {
+            crate::agent::handle_ask_closed(state, device_id, closed);
         }
         _ => {}
     }

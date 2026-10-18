@@ -1,5 +1,6 @@
 mod config;
 mod ipc;
+mod mcp;
 mod pty;
 mod setup;
 mod terminal;
@@ -31,13 +32,52 @@ enum Commands {
     Status,
     /// Show version information
     Version,
+    /// Agent notifications: run the MCP server (default), or manage agent configs
+    Mcp {
+        #[command(subcommand)]
+        action: Option<McpAction>,
+    },
+}
+
+#[derive(Subcommand)]
+enum McpAction {
+    /// Run the stdio MCP server (what agents launch)
+    Serve,
+    /// Register `fil mcp` with the coding agents installed on this machine
+    Install {
+        /// Only these agents (repeatable): claude-code, codex, cursor, gemini,
+        /// opencode, vscode, claude-desktop, windsurf, vibe
+        #[arg(long = "agent")]
+        agents: Vec<String>,
+        /// Show what would change without writing anything
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Remove `fil mcp` from agent configs
+    Uninstall {
+        #[arg(long = "agent")]
+        agents: Vec<String>,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Show daemon reachability and which agents are configured
+    Status,
+    /// Send a test notification to your phone
+    Test,
 }
 
 #[tokio::main]
 async fn main() -> Result<ExitCode> {
     let cli = Cli::parse();
 
-    let default_level = if cli.command.is_some() {
+    // stdout is the MCP transport; keep the server silent unless asked.
+    let serving_mcp = matches!(
+        cli.command,
+        Some(Commands::Mcp {
+            action: None | Some(McpAction::Serve)
+        })
+    );
+    let default_level = if cli.command.is_some() && !serving_mcp {
         "fil=info"
     } else {
         "fil=off"
@@ -57,11 +97,30 @@ async fn main() -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Some(Commands::Status) => run_status(),
+        Some(Commands::Mcp { action }) => run_mcp(action).await,
         Some(Commands::Version) => {
             println!("fil v{}", env!("CARGO_PKG_VERSION"));
             Ok(ExitCode::SUCCESS)
         }
         None => run_proxy(),
+    }
+}
+
+async fn run_mcp(action: Option<McpAction>) -> Result<ExitCode> {
+    use mcp::install::{self, Action, Options};
+    match action.unwrap_or(McpAction::Serve) {
+        McpAction::Serve => {
+            mcp::serve().await?;
+            Ok(ExitCode::SUCCESS)
+        }
+        McpAction::Install { agents, dry_run } => {
+            install::run(Action::Install, Options { dry_run, agents })
+        }
+        McpAction::Uninstall { agents, dry_run } => {
+            install::run(Action::Uninstall, Options { dry_run, agents })
+        }
+        McpAction::Status => install::status().await,
+        McpAction::Test => mcp::send_test_notification().await,
     }
 }
 
@@ -107,8 +166,8 @@ fn run_status() -> Result<ExitCode> {
 fn run_proxy() -> Result<ExitCode> {
     let config = DaemonConfig::load();
     let shell = pty::detect_shell();
-    let pty_process = pty::spawn_pty(&shell)?;
     let session_id = Uuid::new_v4().to_string();
+    let pty_process = pty::spawn_pty(&shell, &session_id)?;
     let cwd = std::env::current_dir()
         .map(|path| path.to_string_lossy().to_string())
         .unwrap_or_default();
