@@ -270,10 +270,11 @@ final class TerminalFollowTests: XCTestCase {
         ])
         state.isFollowRequestInFlight = true
         state.showLiveActivityUnavailableAlert = true
+        state.visibleViewIDs = [UUID()]
         let events = TestValue([String]())
         let store = TestStore(initialState: state) { TerminalFeature() } withDependencies: {
             $0.terminalClient.close = { id in events.update { $0.append("close-\(id)") } }
-            $0.terminalClient.open = { id, _ in
+            $0.terminalClient.open = { id, _, _ in
                 events.update { $0.append("open-\(id)") }
                 return AsyncStream { $0.finish() }
             }
@@ -284,11 +285,10 @@ final class TerminalFollowTests: XCTestCase {
             $0.otherSessionCount = 1
             $0.isFollowRequestInFlight = false
             $0.showLiveActivityUnavailableAlert = false
-            $0.followRevision = 1
+            $0.followRevision = 2
         }
         XCTAssertEqual(events.value.first, "close-A")
-        await store.receive(.onAppear) { $0.followRevision = 2 }
-        await store.receive(.followingStatusLoaded(sessionId: "B", revision: 2, isFollowing: false))
+        await store.receive(\.followingStatusLoaded)
         await store.finish()
         XCTAssertEqual(events.value, ["close-A", "open-B"])
     }
@@ -1745,7 +1745,7 @@ final class AppAuthRecoveryTests: XCTestCase {
         state.terminal?.isFollowing = true
         let connects = TestValue(0)
         let store = TestStore(initialState: state) { MachinesFeature() } withDependencies: {
-            $0.terminalClient.open = { _, _ in connects.update { $0 += 1 }; return AsyncStream { $0.finish() } }
+            $0.terminalClient.open = { _, _, _ in connects.update { $0 += 1 }; return AsyncStream { $0.finish() } }
             $0.terminalClient.reconnect = { _ in connects.update { $0 += 1 } }
         }
         store.exhaustivity = .off
