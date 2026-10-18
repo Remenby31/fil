@@ -9,11 +9,16 @@ pub const MSG_OUTPUT: u8 = 0x02;
 pub const MSG_RESIZE: u8 = 0x03;
 pub const MSG_DESTROYED: u8 = 0x04;
 
+// `fil mcp` → Daemon: one JSON `agent::AgentRequest` per connection, sent
+// instead of Register. The daemon answers with one `MSG_AGENT_REPLY`.
+pub const MSG_AGENT_REQUEST: u8 = 0x10;
+
 // Daemon → Proxy
 pub const MSG_INPUT: u8 = 0x81;
 pub const MSG_REMOTE_RESIZE: u8 = 0x82;
 pub const MSG_CLIENT_ATTACHED: u8 = 0x83;
 pub const MSG_CLIENT_DETACHED: u8 = 0x84;
+pub const MSG_AGENT_REPLY: u8 = 0x90;
 
 #[derive(Debug)]
 pub enum ProxyMessage {
@@ -42,7 +47,7 @@ pub enum DaemonMessage {
     ClientDetached,
 }
 
-fn write_frame(w: &mut impl Write, msg_type: u8, payload: &[u8]) -> io::Result<()> {
+pub fn write_frame(w: &mut impl Write, msg_type: u8, payload: &[u8]) -> io::Result<()> {
     let len = payload.len() as u32;
     w.write_all(&[msg_type])?;
     w.write_all(&len.to_be_bytes())?;

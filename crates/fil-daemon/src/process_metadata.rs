@@ -108,6 +108,45 @@ pub fn snapshot(peer_pid: i32, fallback_cwd: &str, fallback_shell: &str) -> Proc
     }
 }
 
+/// `pid` followed by its ancestors, nearest first, stopping before launchd.
+pub fn ancestor_pids(pid: i32) -> Vec<i32> {
+    let mut chain = Vec::new();
+    let mut current = pid;
+    while current > 1 && chain.len() < 64 && !chain.contains(&current) {
+        chain.push(current);
+        match parent_pid(current) {
+            Some(parent) => current = parent,
+            None => break,
+        }
+    }
+    chain
+}
+
+fn parent_pid(pid: i32) -> Option<i32> {
+    #[cfg(target_os = "macos")]
+    {
+        bsd_info(pid).map(|info| info.pbi_ppid as i32)
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        // The command name in /proc/<pid>/stat may contain spaces and parens.
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        stat.rsplit_once(')')?
+            .1
+            .split_whitespace()
+            .nth(1)?
+            .parse()
+            .ok()
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
 fn shell_basename(shell: &str) -> String {
     shell
         .rsplit('/')
@@ -290,6 +329,15 @@ fn process_cwd(pid: i32) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ancestor_chain_starts_at_self_and_reaches_the_parent() {
+        let chain = ancestor_pids(std::process::id() as i32);
+        assert_eq!(chain.first().copied(), Some(std::process::id() as i32));
+        let parent = unsafe { libc::getppid() };
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        assert!(parent <= 1 || chain.get(1) == Some(&parent));
+    }
 
     #[test]
     fn shell_names_are_normalized() {

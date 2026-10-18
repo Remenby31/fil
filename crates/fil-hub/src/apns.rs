@@ -18,6 +18,7 @@ const STALE_AFTER_SECONDS: i64 = 20;
 pub struct ApnsClient {
     config: Option<ApnsConfig>,
     http: Client,
+    mock_http: Client,
     cached_auth: Arc<RwLock<Option<CachedAuthorization>>>,
 }
 
@@ -53,7 +54,7 @@ pub struct LiveActivityRegistration {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum PushDisposition {
+pub enum PushDisposition {
     Delivered,
     InvalidToken,
     Retryable,
@@ -71,9 +72,13 @@ impl ApnsClient {
         } else {
             warn!("ActivityKit APNs delivery disabled: credentials are not configured");
         }
+        let mock_http = Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()?;
         Ok(Self {
             config,
             http,
+            mock_http,
             cached_auth: Arc::new(RwLock::new(None)),
         })
     }
@@ -142,7 +147,6 @@ impl ApnsClient {
             debug!(activity_id = %registration.activity_id, "skipping APNs delivery because it is disabled");
             return Ok(PushDisposition::Retryable);
         };
-        let authorization = self.authorization(config).await?;
         let now = Utc::now().timestamp();
         let mut aps = json!({
             "timestamp": now,
@@ -153,35 +157,88 @@ impl ApnsClient {
         if event == "end" {
             aps["dismissal-date"] = json!(now + 8);
         }
-        let endpoint = if registration.environment == "sandbox" {
-            "https://api.sandbox.push.apple.com"
-        } else {
-            "https://api.push.apple.com"
+        self.post(
+            config,
+            &registration.environment,
+            &registration.push_token,
+            PushRequest {
+                topic: format!("{}{}", config.topic, LIVE_ACTIVITY_TOPIC_SUFFIX),
+                push_type: "liveactivity",
+                collapse_id: None,
+                expiration: None,
+                body: json!({ "aps": aps }),
+            },
+        )
+        .await
+    }
+
+    /// A regular user-visible alert to the app's own push token.
+    pub async fn send_alert(
+        &self,
+        push_token: &str,
+        environment: &str,
+        alert: &AlertPush,
+    ) -> Result<PushDisposition> {
+        let Some(config) = &self.config else {
+            return Ok(PushDisposition::Retryable);
         };
-        let response = self
-            .http
-            .post(format!("{endpoint}/3/device/{}", registration.push_token))
+        self.post(
+            config,
+            environment,
+            push_token,
+            PushRequest {
+                topic: config.topic.clone(),
+                push_type: "alert",
+                collapse_id: Some(alert.collapse_id.clone()),
+                expiration: alert.expiration,
+                body: alert.payload(),
+            },
+        )
+        .await
+    }
+
+    async fn post(
+        &self,
+        config: &ApnsConfig,
+        environment: &str,
+        push_token: &str,
+        request: PushRequest,
+    ) -> Result<PushDisposition> {
+        let authorization = self.authorization(config).await?;
+        let (http, endpoint) = match &config.endpoint {
+            // Plain-HTTP mocks speak HTTP/1; Apple requires HTTP/2.
+            Some(endpoint) => (&self.mock_http, endpoint.as_str()),
+            None if environment == "sandbox" => (&self.http, "https://api.sandbox.push.apple.com"),
+            None => (&self.http, "https://api.push.apple.com"),
+        };
+        let mut builder = http
+            .post(format!("{endpoint}/3/device/{push_token}"))
             .header("authorization", format!("bearer {authorization}"))
-            .header(
-                "apns-topic",
-                format!("{}{}", config.topic, LIVE_ACTIVITY_TOPIC_SUFFIX),
-            )
-            .header("apns-push-type", "liveactivity")
-            .header("apns-priority", "10")
-            .json(&json!({ "aps": aps }))
-            .send()
-            .await?;
+            .header("apns-topic", request.topic)
+            .header("apns-push-type", request.push_type)
+            .header("apns-priority", "10");
+        if let Some(collapse_id) = request.collapse_id {
+            builder = builder.header("apns-collapse-id", collapse_id);
+        }
+        if let Some(expiration) = request.expiration {
+            builder = builder.header("apns-expiration", expiration.to_string());
+        }
+        let response = builder.json(&request.body).send().await?;
 
         let status = response.status();
         if status.is_success() {
             return Ok(PushDisposition::Delivered);
         }
         let body = response.text().await.unwrap_or_default();
-        if status == StatusCode::NOT_FOUND || status == StatusCode::GONE {
-            warn!(%status, %body, "APNs rejected an expired Live Activity token");
+        if status == StatusCode::NOT_FOUND
+            || status == StatusCode::GONE
+            || body.contains("BadDeviceToken")
+            || body.contains("DeviceTokenNotForTopic")
+        {
+            warn!(%status, %body, "APNs rejected an expired or foreign push token");
             Ok(PushDisposition::InvalidToken)
         } else {
-            warn!(%status, %body, "APNs rejected a Live Activity push");
+            warn!(%status, %body, "APNs rejected a push");
             Ok(PushDisposition::Retryable)
         }
     }
@@ -207,6 +264,58 @@ impl ApnsClient {
             issued_at: now,
         });
         Ok(token)
+    }
+}
+
+struct PushRequest {
+    topic: String,
+    push_type: &'static str,
+    collapse_id: Option<String>,
+    expiration: Option<i64>,
+    body: serde_json::Value,
+}
+
+/// An agent notification as the app receives it. `fil` carries everything the
+/// app needs to deep link and answer; `aps` is only what iOS displays.
+#[derive(Debug, Clone)]
+pub struct AlertPush {
+    pub notification_id: String,
+    pub title: String,
+    pub subtitle: String,
+    pub body: String,
+    pub session_id: Option<String>,
+    pub options: Vec<String>,
+    pub expires_at: Option<i64>,
+    pub collapse_id: String,
+    pub expiration: Option<i64>,
+}
+
+impl AlertPush {
+    pub fn payload(&self) -> serde_json::Value {
+        let is_question = !self.options.is_empty();
+        let mut aps = json!({
+            "alert": { "title": self.title, "body": self.body },
+            "sound": "default",
+            "category": if is_question { "fil.agent.ask" } else { "fil.agent.notify" },
+            "thread-id": self.session_id.as_deref().unwrap_or("fil.agent"),
+        });
+        if !self.subtitle.is_empty() {
+            aps["alert"]["subtitle"] = json!(self.subtitle);
+        }
+        if is_question {
+            // Lets the service extension attach one button per option.
+            aps["mutable-content"] = json!(1);
+        }
+        json!({
+            "aps": aps,
+            "fil": {
+                "kind": if is_question { "ask" } else { "notify" },
+                "notification_id": self.notification_id,
+                "session_id": self.session_id,
+                "options": self.options,
+                "expires_at": self.expires_at,
+            },
+        })
     }
 }
 
@@ -247,7 +356,7 @@ fn state_for_session(
     }
 }
 
-fn display_project_name(cwd: &str) -> String {
+pub fn display_project_name(cwd: &str) -> String {
     let components = cwd
         .split('/')
         .filter(|component| !component.is_empty())
@@ -317,6 +426,40 @@ pub async fn delete_registration(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn question_payload_carries_options_for_the_service_extension() {
+        let push = AlertPush {
+            notification_id: "n1".into(),
+            title: "Deploy".into(),
+            subtitle: "Mac · api".into(),
+            body: "Ship it?".into(),
+            session_id: Some("s1".into()),
+            options: vec!["Yes".into(), "No".into()],
+            expires_at: Some(100),
+            collapse_id: "n1".into(),
+            expiration: Some(100),
+        };
+        let payload = push.payload();
+        assert_eq!(payload["aps"]["mutable-content"], 1);
+        assert_eq!(payload["aps"]["category"], "fil.agent.ask");
+        assert_eq!(payload["aps"]["thread-id"], "s1");
+        assert_eq!(payload["aps"]["alert"]["subtitle"], "Mac · api");
+        assert_eq!(payload["fil"]["options"], json!(["Yes", "No"]));
+        assert_eq!(payload["fil"]["kind"], "ask");
+
+        let notify = AlertPush {
+            options: Vec::new(),
+            session_id: None,
+            subtitle: String::new(),
+            ..push
+        };
+        let payload = notify.payload();
+        assert!(payload["aps"].get("mutable-content").is_none());
+        assert!(payload["aps"]["alert"].get("subtitle").is_none());
+        assert_eq!(payload["aps"]["category"], "fil.agent.notify");
+        assert_eq!(payload["fil"]["session_id"], serde_json::Value::Null);
+    }
 
     #[test]
     fn state_exposes_only_the_final_path_component() {

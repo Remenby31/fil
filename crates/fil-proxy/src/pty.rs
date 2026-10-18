@@ -37,7 +37,7 @@ pub fn current_window_dimensions() -> (u32, u32) {
     (u32::from(ws.ws_col), u32::from(ws.ws_row))
 }
 
-pub fn spawn_pty(shell: &str) -> Result<PtyProcess> {
+pub fn spawn_pty(shell: &str, session_id: &str) -> Result<PtyProcess> {
     let ws = get_window_size();
 
     let OpenptyResult { master, slave } = openpty(None, None).context("failed to open PTY pair")?;
@@ -68,6 +68,9 @@ pub fn spawn_pty(shell: &str) -> Result<PtyProcess> {
             if std::env::var("TERM").is_err() {
                 unsafe { std::env::set_var("TERM", "xterm-256color") };
             }
+            // Lets `fil mcp`, started by an agent in this shell, name its
+            // terminal without asking the agent for anything.
+            unsafe { std::env::set_var("FIL_SESSION_ID", session_id) };
 
             let shell_cstr =
                 CString::new(shell).unwrap_or_else(|_| CString::new("/bin/zsh").unwrap());
