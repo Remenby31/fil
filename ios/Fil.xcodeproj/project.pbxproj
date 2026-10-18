@@ -16,6 +16,7 @@
 		39CB3AE9E57CA77EBE6E321E /* FilBrandMark.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1FD47853EFF9DB80C1C74D /* FilBrandMark.swift */; };
 		3ED9F2613EE8C9A85397C1E3 /* MachinesFeature.swift in Sources */ = {isa = PBXBuildFile; fileRef = B66331C0E221B9D5D0C07D36 /* MachinesFeature.swift */; };
 		401BA633C36CCB008EEA3C92 /* FilLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FA5A973D753D206DC888CFA /* FilLiveActivity.swift */; };
+		5143D30F6D85F7686DD1B10E /* TerminalScrollGestureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE84953E4A29035954EC834E /* TerminalScrollGestureTests.swift */; };
 		54DC2B6BA13C38884C6FACCC /* AppFeature.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8C23BC2602A63EE215567C9 /* AppFeature.swift */; };
 		56B84B52B3D4E9F2994C92BB /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 016799636AB57E35AAD48B7C /* SettingsView.swift */; };
 		585A63B3A3643A77A01AE3C5 /* FilNotification.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0A495137D637D6F090DB9CC /* FilNotification.swift */; };
@@ -128,6 +129,7 @@
 		FA4C99E7EDCA3E7F134CB270 /* TerminalFeature.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalFeature.swift; sourceTree = "<group>"; };
 		FE5677E717AB2F879DC39F68 /* TerminalSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalSessionTests.swift; sourceTree = "<group>"; };
 		FE7CAB9EC98A81F19923E0A5 /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
+		FE84953E4A29035954EC834E /* TerminalScrollGestureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalScrollGestureTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -286,6 +288,7 @@
 			children = (
 				EE0BB7E9EDBBD1438F53DCB6 /* SessionEventSecurityTests.swift */,
 				08E11B23F0EFD1A4C37E450D /* TerminalConnectionSpeedTests.swift */,
+				FE84953E4A29035954EC834E /* TerminalScrollGestureTests.swift */,
 				FE5677E717AB2F879DC39F68 /* TerminalSessionTests.swift */,
 			);
 			path = FilTests;
@@ -491,6 +494,7 @@
 			files = (
 				EC3D48573D25D000A971A1A8 /* SessionEventSecurityTests.swift in Sources */,
 				5BA4130143D85D73EC3AEEAE /* TerminalConnectionSpeedTests.swift in Sources */,
+				5143D30F6D85F7686DD1B10E /* TerminalScrollGestureTests.swift in Sources */,
 				250E3FCCDCE0543A4E0D3388 /* TerminalSessionTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
